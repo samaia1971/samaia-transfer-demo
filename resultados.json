@@ -1,0 +1,98 @@
+{
+  "rows": [
+    {
+      "id": "S1",
+      "title": "Todo en orden",
+      "samaia": "CONTINUE",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "ADMISSIBLE_NOW"
+    },
+    {
+      "id": "S2",
+      "title": "Revocan al aprobador entre la autorización y la ejecución",
+      "samaia": "REJECT",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "REJECT",
+      "reasons": "AUTHORITY_NOT_ACTIVE"
+    },
+    {
+      "id": "S3",
+      "title": "Bajan el límite de monto a 2.000 antes de ejecutar",
+      "samaia": "REJECT",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "REJECT",
+      "reasons": "LIMIT_EXCEEDED_NOW"
+    },
+    {
+      "id": "S4",
+      "title": "El riesgo de la cuenta sube de \"low\" a \"high\"; todos los límites siguen cumpliéndose",
+      "samaia": "ESCALATE",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "CONDITIONS_CHANGED_SINCE_GRANT"
+    },
+    {
+      "id": "S5",
+      "title": "El sistema de permisos no responde: estado del aprobador desconocido",
+      "samaia": "ESCALATE",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "STATE_UNKNOWN"
+    },
+    {
+      "id": "S6",
+      "title": "El estado se leyó hace 40 segundos (dato viejo)",
+      "samaia": "ESCALATE",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "STATE_STALE"
+    },
+    {
+      "id": "S7",
+      "title": "Monto 8.000, irreversible, lo ejecuta un agente de IA",
+      "samaia": "ESCALATE",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "IRREVERSIBLE_REQUIRES_HUMAN"
+    },
+    {
+      "id": "S8",
+      "title": "Monto 8.000, irreversible, lo ejecuta una persona",
+      "samaia": "CONTINUE",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "ADMISSIBLE_NOW"
+    },
+    {
+      "id": "S9",
+      "title": "Entrada mal formada: monto como texto \"4000\"",
+      "samaia": "REJECT",
+      "ok": true,
+      "ruleAtGrant": "CONTINUE",
+      "currentStatePolicy": "CONTINUE",
+      "reasons": "INPUT_INVALID"
+    },
+    {
+      "id": "S10",
+      "title": "Autorización vencida",
+      "samaia": "REJECT",
+      "ok": true,
+      "ruleAtGrant": "REJECT",
+      "currentStatePolicy": "REJECT",
+      "reasons": "AUTHORIZATION_EXPIRED"
+    }
+  ],
+  "latency_us": {
+    "p50": 31.03,
+    "p99": 171.903
+  }
+}
