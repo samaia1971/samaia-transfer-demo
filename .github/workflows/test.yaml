@@ -1,0 +1,30 @@
+# v0.6.4 — Integración continua: en cada cambio corre las pruebas, la demo y el manifiesto de hashes.
+name: test
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Pruebas (decisión, escenarios, mutantes y concurrencia)
+        run: |
+          set +e
+          npm test > test.log 2>&1
+          code=$?
+          grep -E '^not ok' test.log | while read -r line; do echo "::error::$line"; done
+          exit $code
+      - name: Demo (escribe en out/, no toca la evidencia congelada)
+        run: npm run demo
+      - name: El resultado de la demo coincide con la evidencia congelada
+        run: cmp out/resultados_v06.json resultados_v06.json
+      - name: Manifiesto de hashes
+        run: sha256sum -c MANIFEST.sha256
