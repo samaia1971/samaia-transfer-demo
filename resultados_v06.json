@@ -1,5 +1,5 @@
 {
-  "version": "samaia-transfer-demo/0.6.1",
+  "version": "samaia-transfer-demo/0.6.3",
   "scenarios": [
     {
       "id": "A1_normal",
@@ -224,6 +224,50 @@
         ],
         "finding": "CONSISTENT"
       }
+    },
+    {
+      "id": "A11_beneficiary_changed",
+      "title": "Pago aprobado; luego cambian los datos bancarios del beneficiario en el maestro; el agente paga a la cuenta aprobada",
+      "vulnerable": {
+        "posted": false,
+        "paths": [
+          "direct_tool:NOT_SENT"
+        ],
+        "finding": "CONSISTENT"
+      },
+      "protected": {
+        "posted": false,
+        "paths": [
+          "direct_tool:ESCALATE:NOT_SENT"
+        ],
+        "decision": "ESCALATE",
+        "reasons": [
+          "CONDITIONS_CHANGED_SINCE_GRANT"
+        ],
+        "finding": "CONSISTENT"
+      }
+    },
+    {
+      "id": "A12_new_account_old_approval",
+      "title": "El agente paga a la cuenta NUEVA del beneficiario con la aprobación de la cuenta vieja (y borra el destino de la autorización que declara)",
+      "vulnerable": {
+        "posted": true,
+        "paths": [
+          "direct_tool:POSTED"
+        ],
+        "finding": "CONSISTENT"
+      },
+      "protected": {
+        "posted": false,
+        "paths": [
+          "direct_tool:REJECT:NOT_SENT"
+        ],
+        "decision": "REJECT",
+        "reasons": [
+          "OUT_OF_SCOPE_DESTINATION"
+        ],
+        "finding": "CONSISTENT"
+      }
     }
   ],
   "mutants": [
@@ -244,7 +288,8 @@
       "caught": true,
       "caught_by": [
         "P4",
-        "V4"
+        "V4",
+        "R20"
       ]
     },
     {
@@ -262,8 +307,7 @@
       "what": "decide ignora que la cuenta destino está congelada o cerrada",
       "caught": true,
       "caught_by": [
-        "P6",
-        "R7"
+        "P6"
       ]
     },
     {
@@ -321,7 +365,10 @@
         "R1c",
         "R3a",
         "R3b",
-        "R3c"
+        "R3c",
+        "R15",
+        "R18",
+        "R19"
       ]
     },
     {
@@ -355,7 +402,9 @@
         "V5",
         "R1b",
         "R5",
-        "R13"
+        "R13",
+        "R17",
+        "R18"
       ]
     },
     {
@@ -365,7 +414,9 @@
       "caught": true,
       "caught_by": [
         "V4",
-        "R1a"
+        "R1a",
+        "R18",
+        "R19"
       ]
     },
     {
@@ -429,7 +480,6 @@
       "what": "el gateway protegido usa la política que declara la solicitud",
       "caught": true,
       "caught_by": [
-        "V4",
         "R2a",
         "R10"
       ]
@@ -496,7 +546,8 @@
       "what": "una respuesta no autenticada cierra el ticket",
       "caught": true,
       "caught_by": [
-        "R12"
+        "R12",
+        "R16"
       ]
     },
     {
@@ -505,7 +556,73 @@
       "what": "el ticket se cierra aunque el sistema objetivo rechace el pago",
       "caught": true,
       "caught_by": [
-        "R13"
+        "R13",
+        "R19"
+      ]
+    },
+    {
+      "id": "M29",
+      "file": "escalation.js",
+      "what": "la aprobación absorbe un cambio de condiciones ocurrido mientras se esperaba (comportamiento de la v0.6.2)",
+      "caught": true,
+      "caught_by": [
+        "R14"
+      ]
+    },
+    {
+      "id": "M30",
+      "file": "ledger.js",
+      "what": "el libro no comprueba si la política cambió entre decidir y registrar",
+      "caught": true,
+      "caught_by": [
+        "R15"
+      ]
+    },
+    {
+      "id": "M31",
+      "file": "escalation.js",
+      "what": "tres respuestas falsas cierran el ticket legítimo (comportamiento de la v0.6.2)",
+      "caught": true,
+      "caught_by": [
+        "R16"
+      ]
+    },
+    {
+      "id": "M32",
+      "file": "verify.js",
+      "what": "el verificador usa la evidencia sin revisar su forma (se cae con un registro nulo)",
+      "caught": true,
+      "caught_by": [
+        "R17"
+      ]
+    },
+    {
+      "id": "M33",
+      "file": "gateway.js",
+      "what": "el gateway no pregunta al libro si el pago ya estaba registrado (confirmación perdida)",
+      "caught": true,
+      "caught_by": [
+        "R18",
+        "R19"
+      ]
+    },
+    {
+      "id": "M34",
+      "file": "decide.js",
+      "what": "decide no comprueba que el destino esté dentro de la autorización",
+      "caught": true,
+      "caught_by": [
+        "R21"
+      ]
+    },
+    {
+      "id": "M35",
+      "file": "decide.js",
+      "what": "decide ignora las condiciones opcionales (datos del beneficiario)",
+      "caught": true,
+      "caught_by": [
+        "V4",
+        "R20"
       ]
     }
   ]

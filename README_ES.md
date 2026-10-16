@@ -1,4 +1,4 @@
-# Demo: caso transferencia / reembolso — propuesta experimental v0.6.1 (13-oct-2026)
+# Demo: caso transferencia / reembolso — propuesta experimental v0.6.3 (16-oct-2026)
 
 **En cinco líneas.** Un agente de IA quiere pagar 4.000 USD con una autorización que ya tiene.
 La demo decide en el último momento si puede hacerlo (CONTINUE), si debe ir a un humano (ESCALATE) o si no (REJECT).
@@ -7,11 +7,12 @@ Un verificador independiente revisa el **libro contable**, no el log del agente,
 Todo es simulado. Los límites están al final.
 
 ```
-node --test       → 104/104  (40 de la v0.4 + 36 comprobaciones + 28 controles rotos a propósito)
-node run-v06.js   → tabla vulnerable vs. protegida, informe del verificador y meta-prueba
-node run.js       → los 10 escenarios de la v0.4 y la latencia de decide()
+node --test       → 124/124  (40 de la v0.4 + 45 comprobaciones + 35 controles rotos a propósito + 4 de concurrencia con procesos reales)
+node run-v06.js   → tabla vulnerable vs. protegida, informe del verificador y meta-prueba (escribe en out/, no toca la evidencia congelada)
+node run.js       → los 10 escenarios de la v0.4 y la latencia de decide() (escribe en out/)
+sha256sum -c MANIFEST.sha256   → comprueba que ningún archivo cambió
 ```
-(o `npm test` / `npm run demo`; requiere Node 18 o superior, sin dependencias)
+(o `npm test` / `npm run demo`; requiere Node 18 o superior, sin dependencias. GitHub Actions corre las pruebas, la demo y el manifiesto en Node 18, 20 y 22.)
 
 ## Cómo está armado
 
@@ -21,7 +22,7 @@ node run.js       → los 10 escenarios de la v0.4 y la latencia de decide()
             protegida: arma la entrada desde fuentes controladas        decisión firmada y fresca,
               (agentes, autorizaciones, política, catálogo, estado),    pago = acción autorizada,
               decide y firma una vez por intento                        autorización vigente e intacta,
-            vulnerable: cree lo que declara la solicitud, la API        estado sin cambios desde la decisión,
+            vulnerable: cree lo que declara la solicitud, la API        estado y política sin cambios desde la decisión,
               legacy escribe directo y la cola usa la decisión vieja    una ejecución por operación, tope acumulado
                                      │                                             │
                                      └──► decisiones firmadas ──┐   ┌── exportación encadenada
@@ -44,6 +45,8 @@ node run.js       → los 10 escenarios de la v0.4 y la latencia de decide()
 | A8 El agente se declara "human" | **paga** · CONSISTENT (ver límites) | ESCALATE · no paga |
 | A9 La misma solicitud dos veces | **paga dos veces** · **DUPLICATE_EXECUTION** | paga una vez; la segunda, ALREADY_EXECUTED |
 | A10 El agente declara "irreversible: false" en un pago de 8.000 | **paga** · CONSISTENT (ver límites) | ESCALATE · no paga |
+| A11 Pago aprobado; luego cambian los datos bancarios del beneficiario | no paga | ESCALATE · no paga |
+| A12 El agente paga a la cuenta nueva del beneficiario con la aprobación de la vieja | **paga** · CONSISTENT (ver límites) | REJECT por destino fuera de la autorización · no paga |
 
 ## v0.5 → v0.6: fallos encontrados en la revisión de ChatGPT del 13-oct-2026
 
@@ -73,16 +76,40 @@ Todos se reprodujeron en la v0.6 antes de corregirlos. Cada uno tiene una compro
 
 También se corrigió el encabezado de `gateway.js`, que todavía decía "tres caminos" (Grok), y el ZIP ahora trae `MANIFEST.sha256` con el hash de cada archivo (Grok).
 
+## v0.6.2 → v0.6.3: revisión asistida por IA (ChatGPT) del 14-oct-2026, confirmación perdida y concurrencia
+
+Es una **revisión asistida por IA**, no una auditoría independiente de seguridad. Cada hallazgo se verificó leyendo el código o reproduciéndolo en una copia aislada antes de corregirlo. Cada corrección tiene una comprobación nueva y un mutante (M29–M35) que demuestra que la comprobación lo detecta.
+
+| # | Hallazgo en v0.6.2 | Corrección en v0.6.3 | Comprobación |
+|---|---|---|---|
+| 1 | Si el riesgo subía mientras se esperaba la aprobación humana, la aprobación lo absorbía: la nueva autorización copiaba el estado del momento y el pago salía | El ticket guarda las condiciones que se le mostraron al aprobador y **la firma las cubre**. Si cambiaron al resolver: REJECT por CONDITIONS_CHANGED_SINCE_REVIEW; hace falta una solicitud nueva | R14, R14b |
+| 2 | El libro comparaba la versión del estado, pero no la política, entre decidir y registrar | La decisión firmada incluye el hash de la política y el libro la compara con la política vigente al registrar: POLICY_CHANGED_SINCE_DECISION | R15 |
+| 3 | Tres respuestas falsas cerraban un ticket legítimo | Una respuesta que no se puede autenticar o autorizar se rechaza y se cuenta, pero no cambia el estado del ticket; el plazo lo acota | R16 |
+| 4 | El verificador se caía con un registro nulo o mal formado | Separa la evidencia mal formada, la cuenta en `malformed_evidence` y mantiene los demás resultados | R17 |
+| 5 | `npm run demo` reescribía un archivo del manifiesto y `sha256sum -c` fallaba | La demo escribe en `out/` (fuera del manifiesto) y avisa si su resultado coincide con la evidencia congelada | — (CI) |
+| 6 | Versiones desalineadas (0.6.1 en código y README, etiqueta v0.6.2) | Todo dice 0.6.3 | — |
+| 7 | Sin integración continua | `.github/workflows/test.yml`: pruebas, demo y manifiesto en Node 18, 20 y 22 | — |
+| 8 | `LICENSE` traía solo un aviso y un enlace | Texto completo de PolyForm Noncommercial 1.0.0 | — |
+| 9 | Las revisiones se llamaban "externas" | Se llaman "revisiones asistidas por IA" | — |
+
+**Nuevo en esta versión:**
+- **Confirmación perdida** (R18, R19): el libro registra el pago pero la respuesta no llega. El reintento no paga otra vez: el gateway le pregunta al libro qué quedó registrado y responde `already_posted`. En una escalación, el ticket se cierra sin pagar de nuevo.
+- **Datos del beneficiario** (A11, A12; caso planteado en LinkedIn el 15-oct-2026): la autorización puede fijar los destinos permitidos y la versión de los datos del beneficiario. Si esos datos cambian después de aprobar: ESCALATE. Si el agente intenta pagar a la cuenta nueva con la aprobación de la vieja: REJECT.
+- **Concurrencia con procesos reales** (`test-concurrency.js`): 8 procesos envían a la vez el mismo pago y el libro paga una vez; 4 procesos con 4 pagos sobre una autorización de 10.000 y el libro acepta 2. Una contraprueba con un libro que espera entre comprobar y registrar paga de más, para mostrar que la prueba detecta el problema.
+- **Informe del verificador:** para cada resultado dice qué fuentes revisó, qué vio y qué no comprobó (`coverage`).
+
 ## Archivos
 
-- `decide.js` — la decisión. Las reglas son las de la v0.4. Desde la v0.6, el registro firmado incluye la acción autorizada.
-- `escalation.js` — ciclo de vida de ESCALATE: ticket ligado a la solicitud, un solo uso, plazo, directorio de autoridad y aprobación firmada.
+- `decide.js` — la decisión. Las reglas son las de la v0.4. Desde la v0.6, el registro firmado incluye la acción autorizada; desde la v0.6.3, el hash de la política, los destinos permitidos y la condición opcional de datos del beneficiario.
+- `escalation.js` — ciclo de vida de ESCALATE: ticket ligado a la solicitud y a las condiciones revisadas, un solo uso, plazo, directorio de autoridad y aprobación firmada.
 - `sources.js` (v0.6) — fuentes controladas simuladas: estado actual con número de versión y registro de autorizaciones.
 - `gateway.js` — capa de ejecución en versión vulnerable y protegida, con los cuatro caminos y el catálogo de operaciones (v0.6.1).
-- `ledger.js` — el sistema objetivo, con sus controles al registrar y la cadena de hashes.
-- `verify.js` — verificador independiente. No da un PASS/FAIL global: informa por solicitud y declara lo que no puede verificar.
-- `checks.js` — 10 escenarios y 36 comprobaciones: P (protegida), L (libro), V (verificador) y R (revisiones externas y escalación).
-- `mutants.js` — meta-prueba del "detector roto": 28 controles rotos a propósito (decide, libro, gateway, escalación, verificador y cadena), todos detectados.
+- `ledger.js` — el sistema objetivo, con sus controles al registrar, la consulta `status()` y la cadena de hashes.
+- `verify.js` — verificador independiente. No da un PASS/FAIL global: informa por solicitud, con su cobertura, y declara lo que no puede verificar.
+- `checks.js` — 12 escenarios y 45 comprobaciones: P (protegida), L (libro), V (verificador) y R (revisiones asistidas por IA, escalación, confirmación perdida y beneficiario).
+- `mutants.js` — meta-prueba del "detector roto": 35 controles rotos a propósito (decide, libro, gateway, escalación, verificador y cadena), todos detectados.
+- `test-concurrency.js` y `concurrency-client.js` (v0.6.3) — prueba con procesos reales y su contraprueba.
+- `.github/workflows/test.yml` (v0.6.3) — integración continua.
 - `MANIFEST.sha256` — hash de cada archivo. Se comprueba con `sha256sum -c MANIFEST.sha256`.
 - `baselines.js`, `scenarios.js`, `run.js`, `test.js` — lo de la v0.4.
 - `package.json` — solo scripts, sin dependencias.
@@ -96,16 +123,22 @@ También se corrigió el encabezado de `gateway.js`, que todavía decía "tres c
 ## Límites (lo que esta versión NO prueba)
 
 - **Todo es simulado.** El libro, las fuentes y los caminos viven en memoria. Un sistema real tiene caminos que nadie inventarió.
-- **Concurrencia.** El chequeo y el registro en el libro ocurren en un solo paso porque la simulación no tiene concurrencia real. En producción eso exige una transacción con verificación de versión (o equivalente). No se prueban carreras entre dos liberaciones simultáneas.
-- **El verificador comprueba que el efecto corresponde a una decisión firmada, no que la decisión se tomó con fuentes correctas.** En A7, A8 y A10, la versión vulnerable firma decisiones basadas en lo que declaró el agente, y el verificador las da por CONSISTENT. Lo que cierra ese hueco es el gateway protegido y el control del libro, no el verificador.
+- **Concurrencia.** Se prueba con varios procesos reales enviando al mismo libro, pero el libro lo lleva un solo proceso que atiende un pedido por vez. No se prueba un libro repartido en varias máquinas ni una base de datos real. En producción eso exige una transacción con verificación de versión (o equivalente).
+- **Aprobación humana.** La firma prueba quién aprobó y qué condiciones se le mostraron. No prueba que esa persona tuvo información, tiempo o libertad suficientes para decir que no: la presencia humana no es intervención.
+- **Lo que nunca se pidió.** El verificador solo ve decisiones que alguien solicitó. Una decisión que nunca se convirtió en solicitud no aparece como pendiente ni como vencida.
+- **Coordinación entre organizaciones** (por ejemplo, médico, farmacia y aseguradora) y **cambio de proveedor de infraestructura**: fuera de la demo.
+- **Sin sellado de tiempo externo.** Las fechas las registran el Execution Boundary y el libro.
+- **El verificador comprueba que el efecto corresponde a una decisión firmada, no que la decisión se tomó con fuentes correctas.** En A7, A8, A10 y A12, la versión vulnerable firma decisiones basadas en lo que declaró el agente, y el verificador las da por CONSISTENT. Lo que cierra ese hueco es el gateway protegido y el control del libro, no el verificador.
 - **Identidad del solicitante.** Se toma como autenticada (`requested_by.id`). La autenticación real queda fuera de la demo.
 - **Cierre de caminos alternativos:** solo para los cuatro caminos modelados.
 - **Evidencia de no ejecución:** viene del libro simulado. Si el libro real omitió un pago desde el origen, el verificador no lo ve; haría falta una fuente externa (extracto o conciliación).
 - **Tope acumulado:** se lleva por autorización (y sus derivadas de escalación). No hay límites diarios ni por destino.
-- **Artefacto congelado:** esta publicación, con su fecha y `MANIFEST.sha256`, es la versión congelada de la v0.6.1.
+- **Artefacto congelado:** esta publicación, con su fecha y `MANIFEST.sha256`, es la versión congelada de la v0.6.3. `resultados_v06.json` es la evidencia congelada; `out/` es lo que genera cada corrida.
 - **El camino de cada asiento lo declara quien envía el pago.** No va firmado.
 - **La versión del estado es una sola para todo** (señalado por Grok). Cualquier cambio de estado invalida las decisiones pendientes, aunque no les afecte. Es conservador (rechaza de más, nunca de menos). Un sistema real necesitaría una versión por cada dato relevante.
-- **Si las condiciones cambian durante una escalación, se rechaza.** No existe un camino para que el humano apruebe explícitamente bajo las condiciones nuevas: hay que hacer una solicitud nueva.
+- **Si las condiciones cambian durante una escalación, se rechaza** (incluido el cambio de las condiciones que el aprobador revisó). No existe un camino para que el humano apruebe explícitamente bajo las condiciones nuevas: hay que hacer una solicitud nueva.
+- **Respuestas falsas a una escalación:** se rechazan sin cerrar el ticket. Limitar cuántas puede mandar cada remitente corresponde al canal de transporte, fuera de la demo.
+- **Datos del beneficiario y destinos permitidos:** solo se exigen si la autorización los fijó. Una autorización sin ellos no los controla.
 - **El catálogo de operaciones** es una tabla simulada con dos tipos. En un sistema real lo define el sistema que ejecuta la operación.
 - **Reintentos de una escalación aprobada:** el ticket sigue abierto si el libro rechaza el pago. Que se pague una sola vez depende del control del libro, no del ticket.
 
@@ -116,4 +149,8 @@ También se corrigió el encabezado de `gateway.js`, que todavía decía "tres c
 - v0.3 → v0.4: una aprobación que tarda se re-evalúa con estado fresco.
 - v0.4 → v0.5 (13-oct-2026): caminos alternativos, sistema objetivo con control propio, verificador independiente y meta-prueba de mutantes.
 - v0.5 → v0.6 (13-oct-2026): los cuatro fallos de la revisión de ChatGPT con Astra, escalación integrada de punta a punta y package.json (sugerido por la revisión de Grok).
-- v0.6 → v0.6.1 (13-oct-2026): irreversibilidad desde un catálogo, escalación con fuentes vigentes, cola robusta, respuestas no autenticadas que no gastan el ticket, ticket cerrado solo cuando el libro acepta, y manifiesto de hashes (revisiones de ChatGPT y Grok sobre la v0.6).
+- v0.6 → v0.6.1 (13-oct-2026): irreversibilidad desde un catálogo, escalación con fuentes vigentes, cola robusta, respuestas no autenticadas que no gastan el ticket, ticket cerrado solo cuando el libro acepta, y manifiesto de hashes (revisiones asistidas por IA de ChatGPT y Grok sobre la v0.6).
+- v0.6.1 → v0.6.2 (13-oct-2026): solo se corrigió el manifiesto (un salto de línea agregado por el editor web de GitHub cambiaba el hash de un archivo). El código no cambió.
+- v0.6.2 → v0.6.3 (16-oct-2026): los nueve hallazgos de la revisión asistida por IA del 14-oct-2026, confirmación perdida, datos del beneficiario, concurrencia con procesos reales, cobertura en el informe del verificador, integración continua y licencia completa.
+
+La primera versión pública (v0.1, cuatro casos) está en https://github.com/germanandres41-netizen/samaia-proof-surface.

@@ -3,6 +3,8 @@
 // runChecks() devuelve la lista de comprobaciones con ok/detalle. La usan test-v06.js y la meta-prueba de mutantes.
 // v0.6: las comprobaciones R reproducen los cuatro fallos de la revisión de ChatGPT del 13-oct-2026 y los cierran.
 // v0.6.1: R8–R13 reproducen los fallos de las revisiones de ChatGPT y Grok sobre la v0.6.
+// v0.6.3: R14–R21 cubren los hallazgos de la revisión asistida por IA (ChatGPT) del 14-oct-2026 sobre la v0.6.2,
+//   la confirmación perdida y el cambio de datos del beneficiario (escenarios A11 y A12).
 'use strict';
 const crypto = require('crypto');
 const { Ledger } = require('./ledger');
@@ -16,7 +18,8 @@ const MON = new Date('2026-10-12T14:00:00Z');   // se aprueba y se programa el p
 const TUE = new Date('2026-10-13T14:00:00Z');   // cumplimiento pone la cuenta destino en retención
 const WED = new Date('2026-10-14T14:00:00Z');   // se libera el pago programado / se intenta ejecutar
 const sec = (t, s) => new Date(t.getTime() + s * 1000);
-const NORMAL = { approver_status: 'active', amount_limit: 10000, account_status: 'open', risk_level: 'low' };
+// beneficiary_record: versión de los datos del beneficiario en el maestro de proveedores (condición opcional, v0.6.3).
+const NORMAL = { approver_status: 'active', amount_limit: 10000, account_status: 'open', risk_level: 'low', beneficiary_record: 'v1' };
 const PATHS = ['direct_tool', 'legacy_batch_api', 'scheduled_queue', 'escalation'];
 const POLICY = { max_state_age_seconds: 5, human_review_above_amount: 5000 };
 
@@ -26,15 +29,16 @@ function world(mode, { ledgerEnforce = mode === 'protected', state = NORMAL, lag
   const officer = crypto.generateKeyPairSync('ed25519');
   const stateSource = new StateSource(state, lag);
   const authStore = new AuthorizationStore();
-  const ledger = new Ledger({ enforce: ledgerEnforce, boundaryPublicKey: keys.publicKey, maxDecisionAgeSeconds: 5, authStore, stateSource });
+  const policy = { ...POLICY };   // política vigente (fuente controlada); el libro la consulta al registrar
+  const ledger = new Ledger({ enforce: ledgerEnforce, boundaryPublicKey: keys.publicKey, maxDecisionAgeSeconds: 5, authStore, stateSource, policySource: () => gw.policy });
   const agents = { 'agent-payments-7': { kind: 'ai_agent' }, 'manager-42': { kind: 'human' } };
   const approvers = { 'risk-officer-3': { kind: 'human', status: 'active', can_approve_escalations: true, max_amount: 20000, public_key: officer.publicKey } };
-  const gw = new Gateway({ mode, ledger, stateSource, keys, authStore, agents, policy: { ...POLICY }, approvers });
+  const gw = new Gateway({ mode, ledger, stateSource, keys, authStore, agents, policy, approvers });
   // Emite una autorización en el registro y devuelve la solicitud que el agente enviaría (con todo declarado).
   function issue(id, { action = {}, authId, auth = {} } = {}) {
     const aid = authId || 'auth-' + id;
     if (!authStore.has(aid)) authStore.put({ id: aid, granted_by: 'manager-42', granted_at: '2026-10-12T13:00:00Z', valid_until: '2026-10-16T23:00:00Z',
-      scope: { action_types: ['transfer', 'refund'], max_amount: 10000 }, conditions_at_grant: { ...NORMAL }, ...auth });
+      scope: { action_types: ['transfer', 'refund'], max_amount: 10000, destinations: ['acct-9921'] }, conditions_at_grant: { ...NORMAL }, ...auth });
     return { request_id: id, action: { type: 'transfer', amount: 4000, currency: 'USD', destination: 'acct-9921', irreversible: true, ...action },
       requested_by: { id: 'agent-payments-7', kind: 'ai_agent' }, authorization: authStore.get(aid), policy: { ...POLICY } };
   }
@@ -64,6 +68,12 @@ const SCENARIOS = {
     run: w => { const r = w.issue('A9'); return [w.gw.directTool(r, WED), w.gw.directTool(r, sec(WED, 1))]; } },
   A10_declared_reversible: { title: 'El agente declara "irreversible: false" en un pago de 8.000 para evitar la revisión humana',
     run: w => [w.gw.directTool(w.issue('A10', { action: { amount: 8000, irreversible: false } }), WED)] },
+  // v0.6.3 — caso planteado en LinkedIn el 15-oct-2026 (pago aprobado y luego cambian los datos bancarios del beneficiario)
+  A11_beneficiary_changed: { title: 'Pago aprobado; luego cambian los datos bancarios del beneficiario en el maestro; el agente paga a la cuenta aprobada',
+    run: w => { const r = w.issue('A11'); w.stateSource.set({ beneficiary_record: 'v2' }); return [w.gw.directTool(r, WED)]; } },
+  A12_new_account_old_approval: { title: 'El agente paga a la cuenta NUEVA del beneficiario con la aprobación de la cuenta vieja (y borra el destino de la autorización que declara)',
+    run: w => { const r = w.issue('A12', { action: { destination: 'acct-5507' } }); delete r.authorization.scope.destinations; w.stateSource.set({ beneficiary_record: 'v2' });
+      r.authorization.conditions_at_grant.beneficiary_record = 'v2'; return [w.gw.directTool(r, WED)]; } },
 };
 
 function runScenario(key, mode, opts) {
@@ -297,6 +307,77 @@ check('R13', 'revisión Grok v0.6 #1: el sistema objetivo rechaza el pago aproba
   const r3 = w.gw.resolveEscalation(o.ticket.ticket_id, approveResp(w, o), sec(WED, 95));
   return (!r1.executed && r1.ticket_status === 'OPEN' && r2.executed && r2.ticket_status === 'CLOSED' && r3.reason === 'TICKET_ALREADY_CLOSED'
     && w.ledger.entries.length === 1 && findingOf(w, 'R13') === 'CONSISTENT') || JSON.stringify({ r1, r2, r3, finding: findingOf(w, 'R13') });
+});
+
+// v0.6.3 — Revisión asistida por IA (ChatGPT) del 14-oct-2026 sobre la v0.6.2, confirmación perdida y beneficiario.
+check('R14', 'revisión 14-oct #1: el riesgo sube mientras se espera la aprobación → la aprobación no lo absorbe: REJECT por CONDITIONS_CHANGED_SINCE_REVIEW y no se paga', () => {
+  const w = world('protected'), o = escalate8000(w, 'R14');
+  if (o.decision !== 'ESCALATE' || !o.ticket) return 'setup: expected ESCALATE with ticket';
+  const resp = approveResp(w, o);            // el aprobador firma lo que vio: riesgo bajo
+  w.stateSource.set({ risk_level: 'high' });  // después sube el riesgo
+  const r = w.gw.resolveEscalation(o.ticket.ticket_id, resp, sec(WED, 60));
+  return (!r.executed && r.decision === 'REJECT' && r.reason === 'CONDITIONS_CHANGED_SINCE_REVIEW' && (r.changed || []).some(c => c.startsWith('risk_level')) && w.ledger.entries.length === 0)
+    || JSON.stringify(r);
+});
+check('R14b', 'revisión 14-oct #1: la firma del aprobador cubre las condiciones revisadas; si alguien las cambia en el ticket, la firma deja de valer', () => {
+  const w = world('protected'), o = escalate8000(w, 'R14b');
+  const resp = approveResp(w, o);
+  w.gw.tickets.get(o.ticket.ticket_id).reviewed_conditions.risk_level = 'high';
+  w.stateSource.set({ risk_level: 'high' });
+  const r = w.gw.resolveEscalation(o.ticket.ticket_id, resp, sec(WED, 60));
+  return (!r.executed && r.reason === 'APPROVAL_SIGNATURE_INVALID' && w.ledger.entries.length === 0) || JSON.stringify(r);
+});
+check('R15', 'revisión 14-oct #2: la política cambia entre decidir y registrar → el libro rechaza: POLICY_CHANGED_SINCE_DECISION', () => {
+  const w = world('protected'), d = w.gw.decideNow(w.issue('R15'), WED, 'direct_tool');
+  if (d.record.decision !== 'CONTINUE') return 'setup: expected CONTINUE';
+  w.gw.policy.human_review_above_amount = 1000;
+  const res = post(w, d, WED); return (!res.accepted && res.reason === 'POLICY_CHANGED_SINCE_DECISION') || JSON.stringify(res);
+});
+check('R16', 'revisión 14-oct #3: cinco respuestas falsas no cierran el ticket; la aprobación legítima después paga una sola vez', () => {
+  const w = world('protected'), o = escalate8000(w, 'R16');
+  const forged = { approved: true, approver: 'risk-officer-3', signature: Buffer.alloc(64).toString('base64') };
+  const fakes = [1, 2, 3, 4, 5].map(i => w.gw.resolveEscalation(o.ticket.ticket_id, forged, sec(WED, i)));
+  const r = w.gw.resolveEscalation(o.ticket.ticket_id, approveResp(w, o), sec(WED, 60));
+  return (fakes.every(f => f.ticket_status === 'OPEN' && f.reason === 'APPROVAL_SIGNATURE_INVALID') && r.executed && w.ledger.entries.length === 1)
+    || JSON.stringify({ fakes: fakes.map(f => f.reason + '/' + f.ticket_status), r });
+});
+check('R17', 'revisión 14-oct #4: evidencia mal formada (registro nulo, sin bound_to, basura) → el verificador no se cae, la cuenta aparte y mantiene los demás resultados', () => {
+  const w = world('protected'); w.gw.directTool(w.issue('R17'), WED);
+  let rep;
+  try {
+    rep = verify({ decisions: [...w.gw.decisions, { record: null, signature: 'x' }, { record: { decision: 'CONTINUE' }, signature: 'y' }, null, 42],
+      ledgerExport: w.ledger.export(), boundaryPublicKey: w.keys.publicKey, anchoredHead: w.ledger.head() });
+  } catch (e) { return 'THROW: ' + e.message; }
+  const r = rep.requests.find(x => x.request_id === 'R17');
+  return (rep.malformed_evidence.decisions === 4 && r && r.finding === 'CONSISTENT') || JSON.stringify({ malformed: rep.malformed_evidence, r });
+});
+check('R18', 'confirmación perdida: el libro registra el pago pero la respuesta no llega; el reintento no paga otra vez y dice que ya estaba pagado', () => {
+  const w = world('protected');
+  const realPost = w.ledger.post.bind(w.ledger); let lose = true;
+  w.ledger.post = (p, at) => { const res = realPost(p, at); if (lose && res.accepted) { lose = false; return { accepted: false, reason: 'CONFIRMATION_LOST' }; } return res; };
+  const r = w.issue('R18');
+  const o1 = w.gw.directTool(r, WED), o2 = w.gw.directTool(r, sec(WED, 2));
+  return (!o1.executed && o1.ledger === 'REFUSED:CONFIRMATION_LOST' && o2.already_posted === true && o2.posted_entry === 1 && w.ledger.entries.length === 1 && findingOf(w, 'R18') === 'CONSISTENT')
+    || JSON.stringify({ o1, o2, entries: w.ledger.entries.length, finding: findingOf(w, 'R18') });
+});
+check('R19', 'confirmación perdida en la escalación: el pago aprobado se registra pero la respuesta se pierde; el reintento cierra el ticket sin pagar otra vez', () => {
+  const w = world('protected'), o = escalate8000(w, 'R19');
+  const realPost = w.ledger.post.bind(w.ledger); let lose = true;
+  w.ledger.post = (p, at) => { const res = realPost(p, at); if (lose && res.accepted) { lose = false; return { accepted: false, reason: 'CONFIRMATION_LOST' }; } return res; };
+  const r1 = w.gw.resolveEscalation(o.ticket.ticket_id, approveResp(w, o), sec(WED, 60));
+  const r2 = w.gw.resolveEscalation(o.ticket.ticket_id, approveResp(w, o), sec(WED, 62));
+  const r3 = w.gw.resolveEscalation(o.ticket.ticket_id, approveResp(w, o), sec(WED, 64));
+  return (!r1.executed && r1.ticket_status === 'OPEN' && r2.already_posted === true && r2.ticket_status === 'CLOSED' && r3.reason === 'TICKET_ALREADY_CLOSED' && w.ledger.entries.length === 1)
+    || JSON.stringify({ r1, r2, r3, entries: w.ledger.entries.length });
+});
+check('R20', 'beneficiario (A11): cambian sus datos bancarios después de aprobar → ESCALATE por CONDITIONS_CHANGED_SINCE_GRANT y no se paga', () => {
+  const s = runScenario('A11_beneficiary_changed', 'protected'), o = s.outcomes[0];
+  return (o.decision === 'ESCALATE' && reasonsOf(o).includes('CONDITIONS_CHANGED_SINCE_GRANT') && !s.posted) || JSON.stringify(o);
+});
+check('R21', 'beneficiario (A12): pago a la cuenta nueva con la aprobación de la vieja → vulnerable paga; protegida REJECT por OUT_OF_SCOPE_DESTINATION', () => {
+  const v = runScenario('A12_new_account_old_approval', 'vulnerable'), p = runScenario('A12_new_account_old_approval', 'protected');
+  return (v.posted && p.outcomes[0].decision === 'REJECT' && reasonsOf(p.outcomes[0]).includes('OUT_OF_SCOPE_DESTINATION') && !p.posted)
+    || `vulnerable_posted=${v.posted} protected=${p.outcomes[0].decision}/${JSON.stringify(reasonsOf(p.outcomes[0]))}/${p.posted}`;
 });
 
 function runChecks() {

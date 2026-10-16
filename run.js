@@ -19,4 +19,6 @@ const N = 200000, t = [];
 for (let i = 0; i < N; i++) { const s = SCENARIOS[i % SCENARIOS.length].input; const t0 = process.hrtime.bigint(); decide(s, NOW); t.push(Number(process.hrtime.bigint() - t0) / 1000); }
 t.sort((x, y) => x - y);
 console.log(`Latencia de decide() en ${N} llamadas (microsegundos): p50=${t[N/2|0].toFixed(1)} p99=${t[N*0.99|0].toFixed(1)} max=${t[N-1].toFixed(1)}`);
-require('fs').writeFileSync(__dirname + '/resultados.json', JSON.stringify({ rows, latency_us: { p50: t[N/2|0], p99: t[N*0.99|0] } }, null, 2));
+// v0.6.3: la latencia cambia en cada máquina; se escribe en out/ para no tocar resultados.json (evidencia de la v0.4).
+require('fs').mkdirSync(__dirname + '/out', { recursive: true });
+require('fs').writeFileSync(__dirname + '/out/resultados.json', JSON.stringify({ rows, latency_us: { p50: t[N/2|0], p99: t[N*0.99|0] } }, null, 2) + '\n');

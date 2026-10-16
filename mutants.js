@@ -1,4 +1,4 @@
-// Meta-prueba del "detector roto" (v0.5; 23 mutantes en v0.6; 28 desde v0.6.1) (pruebas de mutación).
+// Meta-prueba del "detector roto" (v0.5; 23 mutantes en v0.6; 28 en v0.6.1; 35 desde v0.6.3) (pruebas de mutación).
 // Pregunta: si alguien rompe un control sin querer, ¿las pruebas lo notan?
 // Para cada mutante se copia la demo a una carpeta temporal, se rompe UNA línea de un control
 // (o, en un caso, las dos líneas de un mismo defecto) y se corre la batería completa (checks.js). Si ninguna comprobación falla, el detector está ciego
@@ -72,6 +72,24 @@ const MUTANTS = [
     find: "return { status: 'OPEN', outcome: 'REJECT', reason };", replace: 'return close(reason);' },
   { id: 'M28', file: 'escalation.js', what: 'el ticket se cierra aunque el sistema objetivo rechace el pago',
     find: "if (!res || res.accepted !== true) { t.last_commit_refusal = res && res.reason; return { ...result, status: 'OPEN' }; }", replace: '' },
+  // v0.6.3 — controles agregados tras la revisión asistida por IA del 14-oct-2026 y los casos nuevos
+  { id: 'M29', file: 'escalation.js', what: 'la aprobación absorbe un cambio de condiciones ocurrido mientras se esperaba (comportamiento de la v0.6.2)',
+    edits: [
+      { find: "if (changedSinceReview.length) return close(", replace: "if (false) return close(" },
+      { find: 'conditions_at_grant: { ...t.reviewed_conditions },', replace: "conditions_at_grant: { ...t.reviewed_conditions, ...Object.fromEntries(Object.keys(t.reviewed_conditions).map(k => [k, s[k]])) }," },
+    ] },
+  { id: 'M30', file: 'ledger.js', what: 'el libro no comprueba si la política cambió entre decidir y registrar',
+    find: "if (typeof this.policy !== 'function' || canonical(this.policy()) !== canonical(input.policy) || d.bound_to.policy_hash !== sha256(canonical(input.policy))) return 'POLICY_CHANGED_SINCE_DECISION';", replace: '' },
+  { id: 'M31', file: 'escalation.js', what: 'tres respuestas falsas cierran el ticket legítimo (comportamiento de la v0.6.2)',
+    find: "return { status: 'OPEN', outcome: 'REJECT', reason };", replace: "if (t.failed_responses >= 3) return close('TOO_MANY_INVALID_RESPONSES'); return { status: 'OPEN', outcome: 'REJECT', reason };" },
+  { id: 'M32', file: 'verify.js', what: 'el verificador usa la evidencia sin revisar su forma (se cae con un registro nulo)',
+    find: 'const recs = all.filter(wellFormedDecision).map(', replace: 'const recs = all.map(' },
+  { id: 'M33', file: 'gateway.js', what: 'el gateway no pregunta al libro si el pago ya estaba registrado (confirmación perdida)',
+    find: "if (reason !== 'ALREADY_EXECUTED' || typeof this.ledger.status !== 'function') return out;", replace: 'return out;' },
+  { id: 'M34', file: 'decide.js', what: 'decide no comprueba que el destino esté dentro de la autorización',
+    find: "if (Array.isArray(au.scope.destinations) && !au.scope.destinations.includes(a.destination)) reasons.push(", replace: 'if (false) reasons.push(' },
+  { id: 'M35', file: 'decide.js', what: 'decide ignora las condiciones opcionales (datos del beneficiario)',
+    find: 'const keys = conditionKeysOf(au);', replace: 'const keys = CONDITION_KEYS;' },
 ];
 
 function runMutant(m, srcDir = __dirname) {

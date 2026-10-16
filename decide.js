@@ -1,11 +1,17 @@
 // SAMAIA — Determinación de admisibilidad en el Execution Boundary
 // Caso: agente de IA que ejecuta una transferencia / reembolso ya autorizado.
-// PROPUESTA EXPERIMENTAL para este caso (reglas de la v0.4, 11-oct-2026; el registro incluye la acción autorizada desde la v0.6). No es una regla validada para todo SAMAIA.
+// PROPUESTA EXPERIMENTAL para este caso (reglas de la v0.4, 11-oct-2026; el registro incluye la acción autorizada desde la v0.6
+// y el hash de la política desde la v0.6.3). No es una regla validada para todo SAMAIA.
+// v0.6.3: destino dentro del alcance de la autorización (scope.destinations) y condición opcional beneficiary_record
+// (versión de los datos del beneficiario en el maestro de proveedores).
 // Salida: CONTINUE | ESCALATE | REJECT. No ejecuta la transferencia: el sistema transaccional debe respetar la decisión.
 'use strict';
 const crypto = require('crypto');
 
 const CONDITION_KEYS = ['approver_status', 'amount_limit', 'account_status', 'risk_level'];
+// Condiciones opcionales: solo se exigen y comparan si la autorización las fijó al otorgarse.
+const OPTIONAL_CONDITION_KEYS = ['beneficiary_record'];
+const conditionKeysOf = au => CONDITION_KEYS.concat(OPTIONAL_CONDITION_KEYS.filter(k => isObj(au && au.conditions_at_grant) && k in au.conditions_at_grant));
 const DOMAINS = {
   approver_status: ['active', 'suspended', 'revoked'],
   account_status: ['open', 'under_review', 'frozen', 'closed'],
@@ -20,6 +26,7 @@ const isDate = x => isStr(x) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/
 function validCondition(k, v, allowUnknown) {
   if (allowUnknown && v === 'unknown') return true;
   if (k === 'amount_limit') return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  if (k === 'beneficiary_record') return isStr(v) && v !== 'unknown';
   return DOMAINS[k].includes(v);
 }
 
@@ -40,16 +47,17 @@ function validate(p, now) {
       || !isStr(a.currency) || !isStr(a.destination) || typeof a.irreversible !== 'boolean') e.push('action');
   if (!isObj(r) || !isStr(r.id) || !['human', 'ai_agent', 'rule_engine'].includes(r.kind)) e.push('requested_by');
   if (!isObj(au) || !isStr(au.id) || !isStr(au.granted_by) || !isDate(au.granted_at) || !isDate(au.valid_until)
-      || !isObj(au.scope) || typeof au.scope.max_amount !== 'number' || !Array.isArray(au.scope.action_types)) e.push('authorization');
+      || !isObj(au.scope) || typeof au.scope.max_amount !== 'number' || !Array.isArray(au.scope.action_types)
+      || ('destinations' in au.scope && !(Array.isArray(au.scope.destinations) && au.scope.destinations.length > 0 && au.scope.destinations.every(isStr)))) e.push('authorization');
   else {
-    if (!isObj(au.conditions_at_grant) || CONDITION_KEYS.some(k => !validCondition(k, au.conditions_at_grant[k], false)))
+    if (!isObj(au.conditions_at_grant) || conditionKeysOf(au).some(k => !validCondition(k, au.conditions_at_grant[k], false)))
       e.push('authorization.conditions_at_grant (all four conditions must be present and known)');
     if (Date.parse(au.granted_at) > now.getTime() + MAX_CLOCK_SKEW_SECONDS * 1000) e.push('authorization.granted_at is in the future');
   }
   if (!isObj(s) || !isDate(s.observed_at)) e.push('current_state.observed_at');
   else {
     if (Date.parse(s.observed_at) > now.getTime() + MAX_CLOCK_SKEW_SECONDS * 1000) e.push('current_state.observed_at is in the future');
-    const bad = CONDITION_KEYS.filter(k => k in s && s[k] !== undefined && s[k] !== null && !validCondition(k, s[k], true));
+    const bad = CONDITION_KEYS.concat(OPTIONAL_CONDITION_KEYS).filter(k => k in s && s[k] !== undefined && s[k] !== null && !validCondition(k, s[k], true));
     if (bad.length) e.push('current_state values out of domain: ' + bad.join(', '));
   }
   if (!isObj(pol) || typeof pol.max_state_age_seconds !== 'number' || !(pol.max_state_age_seconds > 0)
@@ -71,16 +79,18 @@ function decide(input, now = new Date(), opts = {}) {
   if (Date.parse(au.valid_until) <= now.getTime()) reasons.push({ code: 'AUTHORIZATION_EXPIRED' });
   if (!au.scope.action_types.includes(a.type)) reasons.push({ code: 'OUT_OF_SCOPE_ACTION' });
   if (a.amount > au.scope.max_amount) reasons.push({ code: 'OUT_OF_SCOPE_AMOUNT' });
+  if (Array.isArray(au.scope.destinations) && !au.scope.destinations.includes(a.destination)) reasons.push({ code: 'OUT_OF_SCOPE_DESTINATION', detail: `${a.destination} not in authorized destinations` });
   if (s.approver_status === 'revoked' || s.approver_status === 'suspended') reasons.push({ code: 'AUTHORITY_NOT_ACTIVE', detail: `${au.granted_by} is ${s.approver_status}` });
   if (typeof s.amount_limit === 'number' && a.amount > s.amount_limit) reasons.push({ code: 'LIMIT_EXCEEDED_NOW', detail: `amount ${a.amount} > current limit ${s.amount_limit}` });
   if (s.account_status === 'closed' || s.account_status === 'frozen') reasons.push({ code: 'ACCOUNT_NOT_OPERABLE', detail: s.account_status });
   if (reasons.length) return finish(p, inputHash, requestHash, 'REJECT', reasons);
   // --- ESCALATE ---
-  const unknown = CONDITION_KEYS.filter(k => s[k] === undefined || s[k] === null || s[k] === 'unknown');
+  const keys = conditionKeysOf(au);
+  const unknown = keys.filter(k => s[k] === undefined || s[k] === null || s[k] === 'unknown');
   if (unknown.length) reasons.push({ code: 'STATE_UNKNOWN', detail: unknown.join(', ') });
   const age = (now.getTime() - Date.parse(s.observed_at)) / 1000;
   if (age > pol.max_state_age_seconds) reasons.push({ code: 'STATE_STALE', detail: `state is ${Math.round(age)}s old (max ${pol.max_state_age_seconds}s)` });
-  const changed = CONDITION_KEYS.filter(k => !unknown.includes(k) && au.conditions_at_grant[k] !== s[k]);
+  const changed = keys.filter(k => !unknown.includes(k) && au.conditions_at_grant[k] !== s[k]);
   if (changed.length) reasons.push({ code: 'CONDITIONS_CHANGED_SINCE_GRANT', detail: changed.map(k => `${k}: ${au.conditions_at_grant[k]} -> ${s[k]}`).join('; ') });
   const humanApproved = typeof opts.verifyHumanApproval === 'function' && opts.verifyHumanApproval(p) === true;
   if (a.irreversible && r.kind !== 'human' && a.amount > pol.human_review_above_amount && !humanApproved) reasons.push({ code: 'IRREVERSIBLE_REQUIRES_HUMAN', detail: `${r.kind} executing irreversible amount ${a.amount}` });
@@ -102,7 +112,7 @@ function requestHashOf(p) {
 
 function finish(p, inputHash, requestHash, decision, reasons) {
   const record = {
-    version: 'samaia-transfer-demo/0.6.1',
+    version: 'samaia-transfer-demo/0.6.3',
     decision, reasons,
     bound_to: {
       request_id: p && p.request_id || null,
@@ -110,6 +120,7 @@ function finish(p, inputHash, requestHash, decision, reasons) {
       state_observed_at: p && p.current_state && p.current_state.observed_at || null,
       input_hash: inputHash,
       request_hash: requestHash,
+      policy_hash: p && isObj(p.policy) ? sha256(canonical(p.policy)) : null,
       action: p && isObj(p.action) ? { type: p.action.type, amount: p.action.amount, currency: p.action.currency, destination: p.action.destination } : null,
     },
   };
@@ -128,4 +139,4 @@ function verifyDecision(record, signature, publicKey) {
   return crypto.verify(null, Buffer.from(canonical(record)), publicKey, Buffer.from(signature, 'base64'));
 }
 
-module.exports = { decide, requestHashOf, signDecision, verifyDecision, canonical, sha256, CONDITION_KEYS };
+module.exports = { decide, requestHashOf, signDecision, verifyDecision, canonical, sha256, CONDITION_KEYS, OPTIONAL_CONDITION_KEYS, conditionKeysOf };

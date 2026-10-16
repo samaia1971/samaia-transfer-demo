@@ -1,4 +1,4 @@
-// Ciclo de vida de un ESCALATE — v0.4 (cierre del ticket revisado en v0.6.1).
+// Ciclo de vida de un ESCALATE — v0.4 (cierre del ticket revisado en v0.6.1; aprobación ligada a las condiciones revisadas en v0.6.3).
 // Nada se ejecuta mientras el caso está abierto. Reglas:
 //  - El caso (ticket) queda ligado a la solicitud exacta: qué, quién, autorización original y política (request_hash).
 //    Al resolverse, la acción se re-evalúa con el ESTADO ACTUAL que se entregue en ese momento (fresco),
@@ -7,13 +7,19 @@
 //  - Solo aprueba quien figura en el DIRECTORIO DE AUTORIDAD como persona activa con permiso para aprobar
 //    escalaciones y con tope de monto suficiente, y la aprobación debe venir FIRMADA con su clave (Ed25519)
 //    sobre ese ticket y esa solicitud. Declarar un nombre o "soy humano" no basta.
-//  - Si aprueba: nueva autorización ligada a las condiciones actuales, con la aprobación firmada adjunta,
+//  - v0.6.3: el ticket guarda las CONDICIONES QUE SE LE MOSTRARON al aprobador (reviewed_conditions) y la firma las cubre.
+//    Si al resolver el estado actual ya no coincide con esas condiciones (por ejemplo, el riesgo subió mientras esperaba),
+//    la aprobación no cubre la situación nueva: REJECT y hace falta una solicitud nueva. Antes (v0.6.2) la nueva
+//    autorización copiaba el estado actual y absorbía el cambio (hallazgo 1 de la revisión del 14-oct-2026).
+//  - Si aprueba y nada cambió: nueva autorización ligada a las condiciones revisadas, con la aprobación firmada adjunta,
 //    y la acción vuelve a pasar por decide() completa. El ejecutor NO cambia: no se puede reclasificar como humano.
+//  - Límite declarado: la firma prueba QUIÉN aprobó y QUÉ se le mostró; no prueba que esa persona tuvo información,
+//    tiempo o libertad suficientes para decir que no ("presencia no es intervención").
 // SIMULADO EN ESTA DEMO: el directorio de autoridad y el almacén de tickets viven en memoria.
 // En producción vendrían del IAM de la organización y de la capa de enforcement.
 'use strict';
 const crypto = require('crypto');
-const { decide, canonical, sha256, requestHashOf } = require('./decide');
+const { decide, canonical, sha256, requestHashOf, conditionKeysOf } = require('./decide');
 
 const isDate = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(x) && !Number.isNaN(Date.parse(x));
 
@@ -21,8 +27,12 @@ class TicketStore {
   constructor() { this.tickets = new Map(); }
   open(input, decision, now, timeoutSeconds = 900) {
     if (decision.decision !== 'ESCALATE') throw new Error('only ESCALATE decisions open a ticket');
+    const s = input.current_state || {};
+    const reviewed = {};
+    for (const k of conditionKeysOf(input.authorization)) reviewed[k] = s[k] === undefined ? null : s[k];
     const t = { ticket_id: crypto.randomUUID(), status: 'OPEN', request_id: input.request_id,
       request_hash: decision.bound_to.request_hash, reasons: decision.reasons.map(r => r.code),
+      reviewed_conditions: reviewed, reviewed_state_observed_at: s.observed_at || null,
       opened_at: now.toISOString(), deadline: new Date(now.getTime() + timeoutSeconds * 1000).toISOString() };
     this.tickets.set(t.ticket_id, t);
     return { ...t };
@@ -30,10 +40,10 @@ class TicketStore {
   get(id) { return this.tickets.get(id); }
 }
 
-// Lo que firma el aprobador: el ticket, la solicitud, la acción concreta y su decisión.
+// Lo que firma el aprobador: el ticket, la solicitud, la acción concreta, las condiciones que revisó y su decisión.
 function approvalPayload(ticket, input, approverId) {
   return { ticket_id: ticket.ticket_id, request_id: ticket.request_id, request_hash: ticket.request_hash,
-           action: input.action, approver: approverId, decision: 'approve' };
+           action: input.action, reviewed_conditions: ticket.reviewed_conditions, approver: approverId, decision: 'approve' };
 }
 function signApproval(ticket, input, approverId, privateKey) {
   return crypto.sign(null, Buffer.from(canonical(approvalPayload(ticket, input, approverId))), privateKey).toString('base64');
@@ -50,16 +60,17 @@ function checkApprover(registry, approverId, amount) {
   return null;
 }
 
-// v0.6.1 — Cuándo se cierra el ticket (revisiones de ChatGPT y Grok del 13-oct-2026):
-//  - Se cierra por: plazo vencido o inválido, solicitud distinta, denegación FIRMADA, nueva decisión REJECT/ESCALATE,
-//    o pago aceptado por el sistema objetivo.
-//  - NO se cierra por una respuesta que no se puede autenticar (fuera del directorio, firma inválida, sin autoridad,
-//    incompleta): esa respuesta se rechaza, pero el ticket sigue abierto para el aprobador legítimo.
-//    Tras MAX_FAILED_RESPONSES respuestas así, se cierra.
+// Cuándo se cierra el ticket (v0.6.1, revisado en v0.6.3):
+//  - Se cierra por: plazo vencido o inválido, solicitud distinta, condiciones distintas de las revisadas, denegación FIRMADA,
+//    nueva decisión REJECT/ESCALATE, o pago aceptado por el sistema objetivo.
+//  - NO se cierra por una respuesta que no se puede autenticar o autorizar (fuera del directorio, firma inválida,
+//    sin autoridad, incompleta): esa respuesta se rechaza y se cuenta, pero el ticket sigue abierto para el aprobador
+//    legítimo hasta su plazo. v0.6.3: en la v0.6.1 tres respuestas así cerraban el ticket, y cualquiera podía cerrar
+//    un ticket legítimo mandando tres respuestas falsas (hallazgo 3 de la revisión del 14-oct-2026). El plazo acota el caso;
+//    limitar el ritmo de respuestas por remitente corresponde al canal de transporte, fuera de esta demo.
 //  - Si la nueva decisión es CONTINUE y se pasó opts.commit, el ticket solo se cierra si el sistema objetivo aceptó el pago.
 //    Si lo rechazó (por ejemplo, el core no respondió), el ticket sigue abierto hasta su plazo y un reintento
 //    vuelve a verificar todo; la ejecución única la garantiza el libro (una por request_id).
-const MAX_FAILED_RESPONSES = 3;
 const DENY = 'deny';
 
 function resolveEscalation(store, ticketId, input, response, now, registry, opts = {}) {
@@ -67,9 +78,8 @@ function resolveEscalation(store, ticketId, input, response, now, registry, opts
   if (!t) return { status: 'NONE', outcome: 'REJECT', reason: 'TICKET_NOT_FOUND' };
   if (t.status !== 'OPEN') return { status: t.status, outcome: 'REJECT', reason: 'TICKET_ALREADY_CLOSED' };   // no se reutiliza
   const close = (reason, extra = {}) => { t.status = 'CLOSED'; t.closed_at = now.toISOString(); t.close_reason = reason; return { status: 'CLOSED', outcome: 'REJECT', reason, ...extra }; };
-  const notAccepted = reason => {   // respuesta rechazada; el ticket sigue abierto (salvo demasiados intentos)
+  const notAccepted = reason => {   // respuesta rechazada; el ticket sigue abierto (una respuesta no autenticada no cambia su estado)
     t.failed_responses = (t.failed_responses || 0) + 1;
-    if (t.failed_responses >= MAX_FAILED_RESPONSES) return close('TOO_MANY_INVALID_RESPONSES', { last: reason });
     return { status: 'OPEN', outcome: 'REJECT', reason };
   };
   if (!isDate(t.deadline)) return close('TICKET_DEADLINE_INVALID');
@@ -87,12 +97,15 @@ function resolveEscalation(store, ticketId, input, response, now, registry, opts
   const bad = checkApprover(registry, response.approver, input.action.amount);
   if (bad) return notAccepted(bad);
   if (!response.approved) return close('ESCALATION_DENIED');   // denegación autenticada
-  // nueva autorización ligada a las condiciones actuales + aprobación humana firmada adjunta
+  // v0.6.3: la aprobación cubre las condiciones que se revisaron, no las que haya ahora.
   const re = JSON.parse(JSON.stringify(input));
-  const s = re.current_state;
+  const s = re.current_state || {};
+  const changedSinceReview = Object.keys(t.reviewed_conditions || {}).filter(k => (s[k] === undefined ? null : s[k]) !== t.reviewed_conditions[k]);
+  if (changedSinceReview.length) return close('CONDITIONS_CHANGED_SINCE_REVIEW', { changed: changedSinceReview.map(k => `${k}: ${t.reviewed_conditions[k]} -> ${s[k]}`) });
+  // nueva autorización ligada a las condiciones revisadas + aprobación humana firmada adjunta
   re.authorization = { ...re.authorization, id: re.authorization.id + '-esc-' + t.ticket_id.slice(0, 8),
     granted_by: response.approver, granted_at: now.toISOString(),
-    conditions_at_grant: { approver_status: s.approver_status, amount_limit: s.amount_limit, account_status: s.account_status, risk_level: s.risk_level },
+    conditions_at_grant: { ...t.reviewed_conditions },
     human_approval: { approver: response.approver, ticket_id: t.ticket_id, request_id: t.request_id, signature: response.signature } };
   const verifier = makeApprovalVerifier(registry, t);
   const recheck = decide(re, now, { verifyHumanApproval: verifier });
@@ -123,4 +136,4 @@ function makeApprovalVerifier(registry, ticket) {
   };
 }
 
-module.exports = { TicketStore, resolveEscalation, signApproval, signDenial, checkApprover, MAX_FAILED_RESPONSES };
+module.exports = { TicketStore, resolveEscalation, signApproval, signDenial, checkApprover, approvalPayload };

@@ -1,4 +1,4 @@
-// Capa de ejecución del agente (v0.5, endurecida en v0.6 y v0.6.1), en dos versiones, con CUATRO caminos hacia el pago:
+// Capa de ejecución del agente (v0.5, endurecida en v0.6, v0.6.1 y v0.6.3), en dos versiones, con CUATRO caminos hacia el pago:
 //   direct_tool       la herramienta normal del agente
 //   legacy_batch_api  una API vieja de pagos por lote que sigue conectada
 //   scheduled_queue   pagos programados: se encolan un día y se liberan otro
@@ -79,7 +79,16 @@ class Gateway {
     }
     if (d.record.decision !== 'CONTINUE') return { ...base, executed: false, ledger: 'NOT_SENT' };
     const r = this.send(d.input, now, path, d);
-    return { ...base, executed: r.accepted, ledger: r.accepted ? 'POSTED' : 'REFUSED:' + r.reason };
+    const out = { ...base, executed: r.accepted, ledger: r.accepted ? 'POSTED' : 'REFUSED:' + r.reason };
+    return r.accepted ? out : this.withLedgerStatus(out, d.input.request_id, r.reason);
+  }
+
+  // v0.6.3 — Confirmación perdida: si el libro dice que la operación ya se ejecutó, se le pregunta qué quedó registrado
+  // en vez de suponer que no se pagó. Así un reintento no paga dos veces y el resultado no miente sobre el dinero.
+  withLedgerStatus(out, requestId, reason) {
+    if (reason !== 'ALREADY_EXECUTED' || typeof this.ledger.status !== 'function') return out;
+    const st = this.ledger.status(requestId);
+    return st.executed ? { ...out, already_posted: true, posted_entry: st.entry.seq } : out;
   }
 
   directTool(request, now) { return this.commit(request, now, 'direct_tool'); }
@@ -138,18 +147,22 @@ class Gateway {
       const signature = signDecision(recheck, this.keys.privateKey);
       this.decisions.push({ record: recheck, signature, path: 'escalation', at: iso(now) });
       this.auths.put(re.authorization, { budget_key: this.auths.budgetKey(req.authorization.id) });
-      return this.send(re, now, 'escalation', { record: recheck, signature });
+      const res = this.send(re, now, 'escalation', { record: recheck, signature });
+      // v0.6.3: si el pago ya había quedado registrado (la confirmación anterior se perdió), el ticket se cierra sin pagar otra vez.
+      if (!res.accepted && this.withLedgerStatus({}, re.request_id, res.reason).already_posted) return { accepted: true, already_posted: true, reason: 'ALREADY_POSTED_EARLIER' };
+      return res;
     };
     const r = resolveEscalation(this.tickets, ticketId, input, response, now, this.approvers, { commit });
     if (r.commit) {
       const res = r.commit;
+      if (res.already_posted) return { path: 'escalation', executed: false, already_posted: true, decision: 'CONTINUE', reason: res.reason, ticket_status: r.status, ledger: 'ALREADY_POSTED' };
       return { path: 'escalation', executed: res.accepted, decision: 'CONTINUE', reason: r.reason, ticket_status: r.status, ledger: res.accepted ? 'POSTED' : 'REFUSED:' + res.reason };
     }
     if (r.recheck) {
       const signature = signDecision(r.recheck, this.keys.privateKey);
       this.decisions.push({ record: r.recheck, signature, path: 'escalation', at: iso(now) });
     }
-    return { path: 'escalation', executed: false, decision: r.outcome, reason: r.reason, ticket_status: r.status, reasons: r.recheck ? r.recheck.reasons.map(x => x.code) : [], ledger: 'NOT_SENT' };
+    return { path: 'escalation', executed: false, decision: r.outcome, reason: r.reason, ticket_status: r.status, reasons: r.recheck ? r.recheck.reasons.map(x => x.code) : [], changed: r.changed, ledger: 'NOT_SENT' };
   }
 }
 

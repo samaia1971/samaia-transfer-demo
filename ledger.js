@@ -1,4 +1,4 @@
-// Sistema objetivo SIMULADO: el libro contable del banco (v0.5, endurecido en v0.6).
+// Sistema objetivo SIMULADO: el libro contable del banco (v0.5, endurecido en v0.6 y v0.6.3).
 // Es donde el pago ocurre de verdad. Tiene su propio registro, separado del registro de decisiones.
 //  - Cada asiento queda encadenado por hash al anterior (para detectar asientos borrados o alterados en una exportación).
 //  - Con enforce=true, el libro solo registra un pago si, EN EL MOMENTO DE REGISTRARLO:
@@ -7,9 +7,14 @@
 //      la decisión es reciente y no se usó antes;
 //      la autorización existe en el registro, no fue alterada y no venció;
 //      el estado relevante no cambió desde que se decidió (versión del estado);
+//      la política vigente es la misma con la que se decidió (v0.6.3; antes solo se comparaba el estado);
 //      esa operación no se ejecutó ya (una sola ejecución por request_id);
 //      el acumulado de la autorización no supera su tope.
-//    Todo esto se comprueba y se registra en un solo paso (en esta simulación, sin concurrencia real).
+//    Todo esto se comprueba y se registra en un solo paso síncrono, sin esperas entre comprobar y registrar.
+//    v0.6.3: test-concurrency.js lo prueba con varios procesos reales enviando a la vez a un mismo libro, y muestra
+//    que un libro que espera entre comprobar y registrar paga de más. No prueba un libro repartido en varias máquinas.
+//  - status(request_id) dice si una operación ya quedó registrada: sirve cuando el pago se registró pero la
+//    confirmación se perdió por el camino (v0.6.3).
 //  - Con enforce=false, acepta cualquier pago (así son muchos sistemas reales: confían en quien los llama).
 // SIMULADO: en producción sería el core bancario o el sistema de pagos, con una transacción que verifique la versión.
 'use strict';
@@ -19,9 +24,9 @@ const { iso } = require('./sources');
 const GENESIS = sha256('samaia-ledger-genesis');
 
 class Ledger {
-  constructor({ enforce = true, boundaryPublicKey = null, maxDecisionAgeSeconds = 5, authStore = null, stateSource = null } = {}) {
+  constructor({ enforce = true, boundaryPublicKey = null, maxDecisionAgeSeconds = 5, authStore = null, stateSource = null, policySource = null } = {}) {
     this.enforce = enforce; this.pub = boundaryPublicKey; this.maxAge = maxDecisionAgeSeconds;
-    this.auths = authStore; this.state = stateSource;
+    this.auths = authStore; this.state = stateSource; this.policy = policySource;
     this.entries = []; this.refusals = []; this.used = new Set(); this.executed = new Set(); this.consumed = new Map();
   }
   head() { return this.entries.length ? this.entries[this.entries.length - 1].entry_hash : GENESIS; }
@@ -45,6 +50,7 @@ class Ledger {
     if (canonical(stored) !== canonical(input.authorization)) return 'AUTHORIZATION_ALTERED';
     if (!(Date.parse(stored.valid_until) > now.getTime())) return 'AUTHORIZATION_EXPIRED_AT_COMMIT';
     if (!this.state || input.current_state.version !== this.state.version) return 'STATE_CHANGED_SINCE_DECISION';
+    if (typeof this.policy !== 'function' || canonical(this.policy()) !== canonical(input.policy) || d.bound_to.policy_hash !== sha256(canonical(input.policy))) return 'POLICY_CHANGED_SINCE_DECISION';
     if (this.used.has(d.decision_hash)) return 'DECISION_ALREADY_USED';
     if (this.executed.has(input.request_id)) return 'ALREADY_EXECUTED';
     const key = this.auths.budgetKey(stored.id);
@@ -75,6 +81,11 @@ class Ledger {
     return { accepted: true, entry: { ...e } };
   }
 
+  status(requestId) {
+    const e = this.entries.find(x => x.request_id === requestId);
+    return e ? { executed: true, entry: { ...e } } : { executed: false };
+  }
+
   export() { return { entries: JSON.parse(JSON.stringify(this.entries)), head: this.head() }; }
 }
 
@@ -84,6 +95,7 @@ function verifyChain(exp, anchoredHead) {
   if (!exp || !Array.isArray(exp.entries)) return { valid: false, reason: 'export malformed' };
   let prev = GENESIS;
   for (let i = 0; i < exp.entries.length; i++) {
+    if (!exp.entries[i] || typeof exp.entries[i] !== 'object') return { valid: false, reason: `entry ${i + 1}: malformed` };
     const { entry_hash, ...rest } = exp.entries[i];
     if (rest.prev_hash !== prev) return { valid: false, reason: `entry ${i + 1}: prev_hash mismatch (entry missing or reordered)` };
     if (sha256(canonical(rest)) !== entry_hash) return { valid: false, reason: `entry ${i + 1}: content altered` };
