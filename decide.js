@@ -37,6 +37,18 @@ function canonical(x) {
   return JSON.stringify(x);
 }
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
+// v0.6.4: profundidad máxima de la entrada, medida sin recursión.
+const MAX_INPUT_DEPTH = 32;
+function tooDeep(x, max) {
+  const stack = [[x, 0]];
+  while (stack.length) {
+    const [v, depth] = stack.pop();
+    if (v === null || typeof v !== 'object') continue;
+    if (depth >= max) return true;
+    for (const k of Object.keys(v)) stack.push([v[k], depth + 1]);
+  }
+  return false;
+}
 
 function validate(p, now) {
   const e = [];
@@ -68,6 +80,12 @@ function validate(p, now) {
 function decide(input, now = new Date(), opts = {}) {
   let p;
   try { p = JSON.parse(JSON.stringify(input)); } catch { p = null; }   // lectura única (lección N-8)
+  // v0.6.4: una entrada anidada de más se rechaza ANTES de recorrerla para el hash (el recorrido recursivo se caería).
+  // El registro de rechazo no vuelve a tocar el objeto peligroso: solo guarda el request_id si es texto.
+  if (tooDeep(p, MAX_INPUT_DEPTH)) {
+    const safe = { request_id: isObj(p) && isStr(p.request_id) ? p.request_id : null };
+    return finish(safe, sha256('INPUT_TOO_DEEP'), sha256('INPUT_TOO_DEEP'), 'REJECT', [{ code: 'INPUT_INVALID', detail: `input nested deeper than ${MAX_INPUT_DEPTH} levels` }]);
+  }
   const inputHash = sha256(canonical(p));
   const requestHash = requestHashOf(p);
   const errors = validate(p, now);
@@ -112,7 +130,7 @@ function requestHashOf(p) {
 
 function finish(p, inputHash, requestHash, decision, reasons) {
   const record = {
-    version: 'samaia-transfer-demo/0.6.3',
+    version: 'samaia-transfer-demo/0.6.4',
     decision, reasons,
     bound_to: {
       request_id: p && p.request_id || null,
@@ -139,4 +157,4 @@ function verifyDecision(record, signature, publicKey) {
   return crypto.verify(null, Buffer.from(canonical(record)), publicKey, Buffer.from(signature, 'base64'));
 }
 
-module.exports = { decide, requestHashOf, signDecision, verifyDecision, canonical, sha256, CONDITION_KEYS, OPTIONAL_CONDITION_KEYS, conditionKeysOf };
+module.exports = { tooDeep, MAX_INPUT_DEPTH, decide, requestHashOf, signDecision, verifyDecision, canonical, sha256, CONDITION_KEYS, OPTIONAL_CONDITION_KEYS, conditionKeysOf };

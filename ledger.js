@@ -35,6 +35,7 @@ class Ledger {
   check(posting, now) {
     const input = posting && posting.input, a = input && input.action;
     if (!input || !a) return 'POSTING_MALFORMED';
+    if (typeof posting.path !== 'string' || posting.path.length > 64) return 'POSTING_MALFORMED';   // v0.6.4: el camino es un texto corto
     if (!posting.decision || !posting.signature) return 'DECISION_MISSING';
     let ok = false;
     try { ok = verifyDecision(posting.decision, posting.signature, this.pub); } catch { ok = false; }
@@ -48,6 +49,13 @@ class Ledger {
     const stored = this.auths && this.auths.get(input.authorization && input.authorization.id);
     if (!stored) return 'AUTHORIZATION_NOT_ON_RECORD';
     if (canonical(stored) !== canonical(input.authorization)) return 'AUTHORIZATION_ALTERED';
+    // v0.6.4: una autorización derivada de una escalación solo vale para su solicitud y su acción, y solo si la madre no cambió.
+    if (stored.derived_from !== undefined) {
+      const parent = this.auths.get(stored.derived_from);
+      if (!parent || sha256(canonical(parent)) !== stored.parent_hash) return 'PARENT_AUTHORIZATION_CHANGED';
+      const b = stored.bound_action || {};
+      if (stored.bound_request_id !== input.request_id || b.amount !== a.amount || b.currency !== a.currency || b.destination !== a.destination) return 'DERIVED_AUTHORIZATION_NOT_FOR_THIS_REQUEST';
+    }
     if (!(Date.parse(stored.valid_until) > now.getTime())) return 'AUTHORIZATION_EXPIRED_AT_COMMIT';
     if (!this.state || input.current_state.version !== this.state.version) return 'STATE_CHANGED_SINCE_DECISION';
     if (typeof this.policy !== 'function' || canonical(this.policy()) !== canonical(input.policy) || d.bound_to.policy_hash !== sha256(canonical(input.policy))) return 'POLICY_CHANGED_SINCE_DECISION';
@@ -67,16 +75,20 @@ class Ledger {
       }
     }
     const input = posting.input;
+    // v0.6.4: primero se arma el asiento (lo que puede fallar); solo si sale bien se toca el estado del libro.
+    const e = { seq: this.entries.length + 1, request_id: input.request_id, amount: posting.amount, currency: posting.currency,
+      destination: posting.destination, path: posting.path, posted_at: iso(now),
+      decision_hash: posting.decision ? posting.decision.decision_hash : null, prev_hash: this.head() };
+    try { e.entry_hash = sha256(canonical(e)); } catch {
+      this.refusals.push({ request_id: null, path: null, reason: 'POSTING_NOT_SERIALIZABLE', at: iso(now) });
+      return { accepted: false, reason: 'POSTING_NOT_SERIALIZABLE' };
+    }
     if (posting.decision) this.used.add(posting.decision.decision_hash);
     this.executed.add(input.request_id);
     if (this.auths && input.authorization && input.authorization.id) {
       const key = this.auths.budgetKey(input.authorization.id);
       this.consumed.set(key, (this.consumed.get(key) || 0) + posting.amount);
     }
-    const e = { seq: this.entries.length + 1, request_id: input.request_id, amount: posting.amount, currency: posting.currency,
-      destination: posting.destination, path: posting.path, posted_at: iso(now),
-      decision_hash: posting.decision ? posting.decision.decision_hash : null, prev_hash: this.head() };
-    e.entry_hash = sha256(canonical(e));
     this.entries.push(e);
     return { accepted: true, entry: { ...e } };
   }

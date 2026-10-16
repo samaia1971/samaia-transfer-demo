@@ -19,6 +19,7 @@ class AuthorizationStore {
   put(auth, meta = {}) { this.items.set(auth.id, clone(auth)); this.meta.set(auth.id, { budget_key: meta.budget_key || auth.id }); }
   has(id) { return this.items.has(id); }
   get(id) { return this.items.has(id) ? clone(this.items.get(id)) : null; }
+  remove(id) { this.items.delete(id); this.meta.delete(id); }   // v0.6.4: retirar una autorización derivada
   budgetKey(id) { return (this.meta.get(id) || {}).budget_key || id; }
 }
 

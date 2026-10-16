@@ -103,7 +103,12 @@ function resolveEscalation(store, ticketId, input, response, now, registry, opts
   const changedSinceReview = Object.keys(t.reviewed_conditions || {}).filter(k => (s[k] === undefined ? null : s[k]) !== t.reviewed_conditions[k]);
   if (changedSinceReview.length) return close('CONDITIONS_CHANGED_SINCE_REVIEW', { changed: changedSinceReview.map(k => `${k}: ${t.reviewed_conditions[k]} -> ${s[k]}`) });
   // nueva autorización ligada a las condiciones revisadas + aprobación humana firmada adjunta
-  re.authorization = { ...re.authorization, id: re.authorization.id + '-esc-' + t.ticket_id.slice(0, 8),
+  // v0.6.4: la autorización derivada sirve solo para ESTA solicitud y ESTA acción, y depende de que la autorización
+  // madre no cambie (parent_hash). No es un permiso general reutilizable.
+  const parent = re.authorization;
+  re.authorization = { ...parent, id: derivedAuthorizationId(parent.id, t.ticket_id),
+    derived_from: parent.id, parent_hash: sha256(canonical(parent)), bound_request_id: t.request_id,
+    bound_action: { amount: re.action.amount, currency: re.action.currency, destination: re.action.destination },
     granted_by: response.approver, granted_at: now.toISOString(),
     conditions_at_grant: { ...t.reviewed_conditions },
     human_approval: { approver: response.approver, ticket_id: t.ticket_id, request_id: t.request_id, signature: response.signature } };
@@ -136,4 +141,6 @@ function makeApprovalVerifier(registry, ticket) {
   };
 }
 
-module.exports = { TicketStore, resolveEscalation, signApproval, signDenial, checkApprover, approvalPayload };
+const derivedAuthorizationId = (parentId, ticketId) => parentId + '-esc-' + ticketId.slice(0, 8);
+
+module.exports = { TicketStore, resolveEscalation, signApproval, signDenial, checkApprover, approvalPayload, derivedAuthorizationId };

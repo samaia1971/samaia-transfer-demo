@@ -12,8 +12,8 @@
 //   moneda, destino y los identificadores. Si la operación es irreversible lo dice el catálogo, no el agente (v0.6.1).
 //   Los cuatro caminos pasan por la misma decisión firmada antes de enviar al libro.
 'use strict';
-const { decide, signDecision } = require('./decide');
-const { TicketStore, resolveEscalation } = require('./escalation');
+const { decide, signDecision, tooDeep, MAX_INPUT_DEPTH } = require('./decide');
+const { TicketStore, resolveEscalation, derivedAuthorizationId } = require('./escalation');
 const { requestHashOf } = require('./decide');
 const { iso, clone } = require('./sources');
 
@@ -35,13 +35,17 @@ class Gateway {
 
   // Qué se decide: en la versión protegida, nada de identidad, autorización ni política sale de la solicitud.
   canonicalRequest(request) {
-    if (this.mode === 'vulnerable') return request === undefined ? null : clone(request);
+    if (this.mode === 'vulnerable') return request === undefined || tooDeep(request, MAX_INPUT_DEPTH) ? null : clone(request);
     const rq = isObj(request) ? request : {};
-    const rid = isObj(rq.requested_by) ? rq.requested_by.id : undefined;
-    const who = this.agents[rid];
-    const auth = this.auths.get(isObj(rq.authorization) ? rq.authorization.id : undefined);
+    // v0.6.4: los valores se usan como claves solo si son texto y propios (no heredados): un objeto o "constructor" no rompe ni engaña.
+    const own = (table, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(table, k) ? table[k] : undefined;
+    const rid = isObj(rq.requested_by) && typeof rq.requested_by.id === 'string' ? rq.requested_by.id : undefined;
+    const who = own(this.agents, rid);
+    const stored = this.auths.get(isObj(rq.authorization) && typeof rq.authorization.id === 'string' ? rq.authorization.id : undefined);
+    // v0.6.4: una autorización derivada de una escalación no se acepta en solicitudes ordinarias (solo la usa la escalación).
+    const auth = stored && stored.derived_from === undefined ? stored : null;
     const a = isObj(rq.action) ? rq.action : {};
-    const cat = this.catalog[a.type];
+    const cat = own(this.catalog, a.type);
     return {
       request_id: rq.request_id,
       action: { type: a.type, amount: a.amount, currency: a.currency, destination: a.destination,
@@ -61,16 +65,26 @@ class Gateway {
     return { record, signature, input };
   }
 
+  // v0.6.4: si el sistema objetivo lanza una excepción, se trata como un rechazo (TARGET_ERROR); después se concilia con el libro.
   send(input, now, path, d) {
     const a = input.action;
-    return this.ledger.post({ input: clone(input), amount: a.amount, currency: a.currency, destination: a.destination, path,
-      decision: d ? d.record : null, signature: d ? d.signature : null }, now);
+    try {
+      return this.ledger.post({ input: clone(input), amount: a.amount, currency: a.currency, destination: a.destination, path,
+        decision: d ? d.record : null, signature: d ? d.signature : null }, now);
+    } catch (e) { return { accepted: false, reason: 'TARGET_ERROR' }; }
   }
 
   // Único punto de paso en la versión protegida: decidir con fuentes controladas y, solo si CONTINUE, enviar.
   commit(request, now, path, pre) {
     const d = pre || this.decideNow(request, now, path);
     const base = { path, decision: d.record.decision, reasons: d.record.reasons.map(r => r.code) };
+    // v0.6.4: antes de abrir un ticket o de informar "no se pagó", se pregunta al libro si esta solicitud ya quedó pagada.
+    if (d.record.decision !== 'CONTINUE' && this.mode === 'protected') {
+      const prior = this.ledgerStatus(d.input.request_id, d.input.action);
+      if (prior && !prior.ledger_status_unknown) return { ...base, executed: false, ledger: 'NOT_SENT', ...prior };
+      // v0.6.4: si no se pudo consultar el libro, la respuesta conserva que el resultado de un intento anterior sigue sin saberse.
+      if (prior && prior.ledger_status_unknown) base.ledger_status_unknown = true;
+    }
     if (d.record.decision === 'ESCALATE' && this.mode === 'protected') {
       const t = this.tickets.open(d.input, d.record, now);
       const { current_state, ...req } = d.input;
@@ -80,15 +94,34 @@ class Gateway {
     if (d.record.decision !== 'CONTINUE') return { ...base, executed: false, ledger: 'NOT_SENT' };
     const r = this.send(d.input, now, path, d);
     const out = { ...base, executed: r.accepted, ledger: r.accepted ? 'POSTED' : 'REFUSED:' + r.reason };
-    return r.accepted ? out : this.withLedgerStatus(out, d.input.request_id, r.reason);
+    return r.accepted ? out : this.withLedgerStatus(out, d.input.request_id, d.input.action);
   }
 
   // v0.6.3 — Confirmación perdida: si el libro dice que la operación ya se ejecutó, se le pregunta qué quedó registrado
   // en vez de suponer que no se pagó. Así un reintento no paga dos veces y el resultado no miente sobre el dinero.
-  withLedgerStatus(out, requestId, reason) {
-    if (reason !== 'ALREADY_EXECUTED' || typeof this.ledger.status !== 'function') return out;
-    const st = this.ledger.status(requestId);
-    return st.executed ? { ...out, already_posted: true, posted_entry: st.entry.seq } : out;
+  // v0.6.4: se consulta con CUALQUIER rechazo (por ejemplo DECISION_ALREADY_USED en un reintento del mismo segundo),
+  // no solo con ALREADY_EXECUTED.
+  withLedgerStatus(out, requestId, action) {
+    const prior = this.ledgerStatus(requestId, action);
+    if (!prior) return out;
+    // v0.6.4: si el envío falló con una excepción y tampoco se pudo consultar el libro, el resultado es DESCONOCIDO, no "no enviado".
+    if (prior.ledger_status_unknown && out.ledger === 'REFUSED:TARGET_ERROR') return { ...out, ...prior, ledger: 'OUTCOME_UNKNOWN' };
+    return { ...out, ...prior };
+  }
+  // v0.6.4: "ya pagado" solo si el asiento con ese identificador es ESTA operación (monto, moneda, destino).
+  // Si es otra, se informa un conflicto explícito: el identificador ya corresponde a una operación diferente.
+  ledgerStatus(requestId, action) {
+    if (typeof this.ledger.status !== 'function') return null;
+    let st;
+    try { st = this.ledger.status(requestId); } catch { return { ledger_status_unknown: true }; }   // v0.6.4: la consulta falló
+    if (!st || typeof st !== 'object' || typeof st.executed !== 'boolean') return { ledger_status_unknown: true };
+    if (!st.executed) return null;
+    // v0.6.4: una respuesta "ejecutado" sin asiento válido no se usa: el estado queda desconocido (no tumba la cola).
+    const e = st.entry, a = isObj(action) ? action : {};
+    if (!isObj(e) || typeof e.seq !== 'number') return { ledger_status_unknown: true };
+    const sameOperation = e.amount === a.amount && e.currency === a.currency && e.destination === a.destination;
+    return sameOperation ? { already_posted: true, posted_entry: e.seq }
+      : { request_id_conflict: true, posted_entry: e.seq, posted_effect: { amount: e.amount, currency: e.currency, destination: e.destination } };
   }
 
   directTool(request, now) { return this.commit(request, now, 'direct_tool'); }
@@ -103,6 +136,8 @@ class Gateway {
     // v0.6.1: una solicitud sin forma mínima no entra a la cola (resultado explícito, no excepción).
     if (this.mode === 'protected' && !(isObj(request) && typeof request.request_id === 'string' && isObj(request.action)))
       return { queued: false, decision_at_enqueue: 'REJECT', reason: 'MALFORMED_REQUEST' };
+    // v0.6.4: una solicitud anidada de más se rechaza antes de copiarla (la copia recursiva se caería).
+    if (tooDeep(request, MAX_INPUT_DEPTH)) return { queued: false, decision_at_enqueue: 'REJECT', reason: 'MALFORMED_REQUEST' };
     if (this.mode === 'vulnerable') {
       const d = this.decideNow(request, now, 'scheduled_queue');   // decide al encolar
       this.queue.push({ request: clone(request), d });
@@ -122,7 +157,10 @@ class Gateway {
         }
         return this.commit(q.request, now, 'scheduled_queue');         // decide de nuevo al liberar
       } catch (e) {
-        return { path: 'scheduled_queue', executed: false, decision: 'REJECT', reasons: ['ITEM_ERROR'], error: e.message, ledger: 'NOT_SENT' };
+        // v0.6.4: tras una excepción no se afirma "no enviado": se informa lo que el libro tenga (o que no se sabe).
+        const failed = { path: 'scheduled_queue', executed: false, decision: 'REJECT', reasons: ['ITEM_ERROR'], error: e.message, ledger: 'NOT_CONFIRMED' };
+        return this.withLedgerStatus(failed,
+          isObj(q.request) ? q.request.request_id : undefined, isObj(q.request) && isObj(q.request.action) ? q.request.action : undefined);
       }
     });
     this.queue = [];
@@ -133,13 +171,26 @@ class Gateway {
   // v0.6.1: al resolver se vuelve a armar la solicitud desde las fuentes controladas (autorización, política,
   // registro de agentes, catálogo) y no desde lo guardado al abrir el ticket. Si alguna cambió, la aprobación
   // ya no corresponde a lo que se aprobó: REJECT y hace falta una solicitud nueva.
+  // v0.6.4: cualquier respuesta sin pago nuevo (incluido TICKET_ALREADY_CLOSED) informa además lo que el libro tiene para esa solicitud.
   resolveEscalation(ticketId, response, now) {
+    const out = this.resolveEscalationInner(ticketId, response, now), req = this.pending.get(ticketId);
+    if (!req || out.executed || out.already_posted || out.request_id_conflict) return out;
+    return this.withLedgerStatus(out, req.request_id, req.action);
+  }
+
+  resolveEscalationInner(ticketId, response, now) {
     const req = this.pending.get(ticketId), t = this.tickets.get(ticketId);
     if (!req || !t) return { path: 'escalation', executed: false, decision: 'REJECT', reason: 'TICKET_NOT_FOUND', ledger: 'NOT_SENT' };
+    const derivedId = derivedAuthorizationId(req.authorization.id, ticketId);
+    const closeTicket = reason => { t.status = 'CLOSED'; t.closed_at = now.toISOString(); t.close_reason = reason; this.auths.remove(derivedId); };
+    // v0.6.4: PRIMERO se concilia con el libro (confirmación perdida), antes de evaluar si hoy se permitiría pagar.
+    const prior = t.status === 'OPEN' && this.ledgerStatus(req.request_id, req.action);
+    if (prior && prior.already_posted) { closeTicket('ALREADY_POSTED_EARLIER'); return { path: 'escalation', executed: false, decision: 'CONTINUE', reason: 'ALREADY_POSTED_EARLIER', ticket_status: 'CLOSED', ledger: 'ALREADY_POSTED', ...prior }; }
+    if (prior && prior.request_id_conflict) { closeTicket('REQUEST_ID_CONFLICT'); return { path: 'escalation', executed: false, decision: 'REJECT', reason: 'REQUEST_ID_CONFLICT', ticket_status: 'CLOSED', ledger: 'NOT_SENT', ...prior }; }
     const fresh = this.canonicalRequest(req);
     if (t.status === 'OPEN' && requestHashOf(fresh) !== t.request_hash) {
       const changed = ['authorization', 'policy', 'requested_by', 'action'].filter(k => JSON.stringify(fresh[k]) !== JSON.stringify(req[k]));
-      t.status = 'CLOSED'; t.closed_at = now.toISOString(); t.close_reason = 'REQUEST_CONDITIONS_CHANGED_WHILE_PENDING';
+      t.status = 'CLOSED'; t.closed_at = now.toISOString(); t.close_reason = 'REQUEST_CONDITIONS_CHANGED_WHILE_PENDING'; this.auths.remove(derivedAuthorizationId(req.authorization.id, ticketId));
       return { path: 'escalation', executed: false, decision: 'REJECT', reason: 'REQUEST_CONDITIONS_CHANGED_WHILE_PENDING', changed, ledger: 'NOT_SENT' };
     }
     const input = { ...fresh, current_state: this.state.read(now) };
@@ -148,11 +199,16 @@ class Gateway {
       this.decisions.push({ record: recheck, signature, path: 'escalation', at: iso(now) });
       this.auths.put(re.authorization, { budget_key: this.auths.budgetKey(req.authorization.id) });
       const res = this.send(re, now, 'escalation', { record: recheck, signature });
+      // v0.6.4 (revisión de Grok): la derivada existe solo mientras se registra el pago; si el libro no lo acepta, se retira.
+      // Un reintento del ticket la vuelve a crear con las fuentes vigentes.
+      if (!res.accepted) this.auths.remove(re.authorization.id);
       // v0.6.3: si el pago ya había quedado registrado (la confirmación anterior se perdió), el ticket se cierra sin pagar otra vez.
-      if (!res.accepted && this.withLedgerStatus({}, re.request_id, res.reason).already_posted) return { accepted: true, already_posted: true, reason: 'ALREADY_POSTED_EARLIER' };
+      if (!res.accepted && this.withLedgerStatus({}, re.request_id, re.action).already_posted) return { accepted: true, already_posted: true, reason: 'ALREADY_POSTED_EARLIER' };
       return res;
     };
     const r = resolveEscalation(this.tickets, ticketId, input, response, now, this.approvers, { commit });
+    // v0.6.4: cerrado el ticket (pagado, denegado, condiciones cambiadas o rechazado), la autorización derivada se retira.
+    if (t.status === 'CLOSED') this.auths.remove(derivedId);
     if (r.commit) {
       const res = r.commit;
       if (res.already_posted) return { path: 'escalation', executed: false, already_posted: true, decision: 'CONTINUE', reason: res.reason, ticket_status: r.status, ledger: 'ALREADY_POSTED' };

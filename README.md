@@ -1,13 +1,13 @@
-# SAMAIA — Transfer demo: admissibility at the execution boundary (v0.6.3, 16 Oct 2026)
+# SAMAIA — Transfer demo: admissibility at the execution boundary (v0.6.4, 16 Oct 2026)
 
 **In five lines.** An AI agent wants to pay 4,000 USD using an authorization it already holds.
 The demo decides at the last moment whether it may proceed (CONTINUE), must go to a human (ESCALATE), or must not (REJECT).
 Everything runs against a **vulnerable** and a **protected** version, through four paths to the payment.
 An independent verifier reads the **ledger**, not the agent's log, and shows cases where the log says "rejected" and the money moved anyway.
-Everything is simulated. The limits are listed below.
+Everything is simulated: it is a worked example of the pattern inside its own model, not a general solution. The limits are listed below.
 
 ```
-npm test        → 124/124  (40 decision tests + 45 scenario checks + 35 deliberately broken controls + 4 multi-process concurrency tests)
+npm test        → 166/166  (40 decision tests + 64 scenario checks + 58 deliberately broken controls + 4 multi-process concurrency tests)
 npm run demo    → vulnerable vs. protected table, verifier report and mutation meta-test (writes to out/, never to the frozen evidence)
 sha256sum -c MANIFEST.sha256   → checks that no file changed
 ```
@@ -48,11 +48,11 @@ Node 18+, no dependencies. GitHub Actions runs the tests, the demo and the manif
 | A11 Payment approved; then the beneficiary's bank details change | does not pay | ESCALATE · does not pay |
 | A12 Agent pays the beneficiary's new account using the old account's approval | **pays** · CONSISTENT (see limits) | REJECT (destination outside the authorization) · does not pay |
 
-The escalation path is tested end to end: ESCALATE → signed human approval → current sources re-read → new decision → paid once. It does not pay if the authorization expires, the state changes, the conditions the approver reviewed change, or the authorization or policy change while the approval is pending. If the ledger records the payment but the confirmation is lost, a retry does not pay again.
+The escalation path is tested end to end: ESCALATE → signed human approval → current sources re-read → new decision → paid once. It does not pay if the authorization expires, the state changes, the conditions the approver reviewed change, or the authorization or policy change while the approval is pending. The approval yields a single-use authorization bound to that request and action: ordinary requests cannot cite it, the ledger refuses it for any other request or amount or if the parent authorization changed, and it exists only while the approved payment is being posted: it is withdrawn if the ledger does not accept it and when the ticket closes (paid, denied or rejected). If the ledger records the payment but the confirmation is lost, a retry does not pay again and reports the earlier payment, even if conditions changed in between. A payment counts as "already posted" only if the ledger entry with that request ID is the same operation (amount, currency, destination); otherwise the response is an explicit REQUEST_ID_CONFLICT.
 
 ## Adversarial review history
 
-Each version was reviewed with AI assistance (ChatGPT, Grok). These are **AI-assisted reviews, not an independent security audit**. Every finding was first reproduced or confirmed in the code, then fixed, then covered by a check and by a mutant that proves the check catches it. Details in `README_ES.md`.
+Each version was reviewed with AI assistance (ChatGPT, Grok). These are **AI-assisted reviews, not an independent security audit**. Every finding was first reproduced or confirmed in the code, then fixed, then covered by a check and by a mutant that proves the check catches it. Details in `README_ES.md`. v0.6.3 was published before its own review; that review found a high-severity escalation bypass, fixed in v0.6.4.
 
 | Version | Findings fixed |
 |---|---|
@@ -62,22 +62,29 @@ Each version was reviewed with AI assistance (ChatGPT, Grok). These are **AI-ass
 | v0.6.1 (13 Oct) | Agent-declared irreversibility; escalation resolved against stale authorization or policy; malformed request blocking the queue; unauthenticated response consuming the ticket; ticket closed although the ledger refused the payment |
 | v0.6.2 (13 Oct) | Manifest only (a trailing newline added by the GitHub web editor changed one hash); no code change |
 | v0.6.3 (16 Oct) | Approval absorbing a risk increase during escalation (approval now signs the reviewed conditions); policy change between decision and posting; forged responses closing a legitimate ticket; verifier crashing on malformed evidence; demo rewriting a manifested file; version alignment; CI; full license text. New: lost confirmation, beneficiary-detail changes, multi-process concurrency test, per-result coverage in the verifier report |
+| v0.6.4 (16 Oct) | **High:** the authorization created by an approved escalation could be reused for other payments and survived a signed denial (now single-use, bound to one request and action, withdrawn when the ticket closes, checked again by the ledger). Verifier accepted invalid or backwards timestamps and could crash on them (now TIMING_INVALID). Lost-confirmation retries within the same second, or after conditions changed, hid the earlier payment (now reported). Reviewed again before publication: an escalation retry checked changed conditions before reconciling with the ledger, and "already posted" matched any entry with the same request ID even for a different amount (now reconciled first, and a different operation is a REQUEST_ID_CONFLICT). Third pass before publication: an exception from the target system left the provisional authorization stored; a malformed ledger entry (no request ID) could hide a second payment behind CONSISTENT; an unserializable posting could mark a request executed and consume budget without creating an entry; a non-text action type crashed the gateway (all fixed). Fourth pass: a copy of a decision with an invalid signature could redirect that attribution; a failed status query after a thrown confirmation was reported as "not sent" or escaped as an exception; a deeply nested input crashed before validation (all fixed). Fifth pass: a later rejected retry dropped the "outcome unknown" flag; a malformed status answer stopped the whole queue; deeply nested input still crashed the scheduler (all fixed). Wording of limits |
 
 ## Limits (what this version does NOT prove)
 
 - **Everything is simulated.** Ledger, sources and paths live in memory. A real system has paths nobody inventoried.
 - **Concurrency is tested with several real processes posting to one ledger**, which a single process serializes. A ledger distributed across machines or a real database is not tested.
-- **Human approval.** The signature proves who approved and which conditions they were shown. It does not prove that the person had enough information, time or freedom to say no: human presence is not intervention.
+- **Human approval.** The signature proves that the approver's key signed the request and the reviewed conditions. It does not prove what the person actually saw, nor that they had enough information, time or freedom to say no: human presence is not intervention.
 - **What was never requested.** The verifier only sees decisions someone asked for. A decision that never became a request does not appear as pending or overdue.
 - **Cross-organization coordination** and **infrastructure provider changes** are out of scope. **No external timestamping.**
 - **The verifier checks that each effect matches a signed decision, not that the decision was made on correct inputs.** In A7, A8, A10 and A12 the vulnerable gateway signs decisions based on what the agent declared, and the verifier reports CONSISTENT. That gap is closed by the protected gateway and the ledger checks, not by the verifier.
 - **Requester identity** is assumed authenticated.
+- **"Independent" verifier** means independent of the gateway's log; it is not independent corroboration of the ledger's own truth.
 - **Non-execution evidence** comes from the simulated ledger. If a real ledger omitted a posting, the verifier would not see it; an external source (bank statement, reconciliation) is needed.
-- **State versioning is coarse:** any state change invalidates pending decisions. Conservative: it rejects too much, never too little.
+- **State versioning between decision and posting is coarse:** any state change between a signed decision and its posting invalidates it. Conservative: it rejects too much, never too little. An escalation, instead, compares the reviewed condition values at resolution: if a value changes and returns to the reviewed one (low → high → low) before resolution, the approval still applies.
 - **If conditions change during an escalation, it is rejected**, including the conditions the approver reviewed. There is no path for a human to explicitly approve under the new conditions.
 - **Forged responses to an escalation** are rejected without closing the ticket; per-sender rate limiting belongs to the transport layer.
 - **Beneficiary details and allowed destinations** are only enforced if the authorization sets them.
 - **The path of each ledger entry is declared by the sender**, not signed.
+- **Limits have no currency unit.** Authorization caps and the human-review threshold are plain numbers; the currency is signed and checked at posting, but caps are not currency-scoped.
+- **Lost-confirmation recovery depends on the ledger's status query.** If sending fails with an exception and the status query also fails, the result is OUTCOME_UNKNOWN (never "not sent"); while the query stays unavailable, later attempts keep the flag `ledger_status_unknown`; once it answers, the earlier payment is reported. A malformed status answer counts as unknown.
+- **Input depth** is limited to 32 levels; deeper input is rejected as INPUT_INVALID before it is hashed.
+- **Malformed ledger evidence** is never read as absence: an entry that cites a known decision with a valid signature makes that request MALFORMED_POSTING; one that cannot be attributed makes favourable results INCONCLUSIVE_MALFORMED_EVIDENCE.
+- **Mutants.** The 58 mutants show that these specific broken controls are caught. They do not prove complete adversarial coverage.
 
 ## Related work
 

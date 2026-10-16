@@ -1,4 +1,4 @@
-// Meta-prueba del "detector roto" (v0.5; 23 mutantes en v0.6; 28 en v0.6.1; 35 desde v0.6.3) (pruebas de mutación).
+// Meta-prueba del "detector roto" (v0.5; 23 mutantes en v0.6; 28 en v0.6.1; 35 en v0.6.3; 58 desde v0.6.4) (pruebas de mutación).
 // Pregunta: si alguien rompe un control sin querer, ¿las pruebas lo notan?
 // Para cada mutante se copia la demo a una carpeta temporal, se rompe UNA línea de un control
 // (o, en un caso, las dos líneas de un mismo defecto) y se corre la batería completa (checks.js). Si ninguna comprobación falla, el detector está ciego
@@ -66,7 +66,7 @@ const MUTANTS = [
   { id: 'M26', file: 'gateway.js', what: 'una solicitud mal formada entra a la cola y su error detiene la liberación',
     edits: [
       { find: "if (this.mode === 'protected' && !(isObj(request) && typeof request.request_id === 'string' && isObj(request.action)))", replace: 'if (false)' },
-      { find: "return { path: 'scheduled_queue', executed: false, decision: 'REJECT', reasons: ['ITEM_ERROR'], error: e.message, ledger: 'NOT_SENT' };", replace: 'throw e;' },
+      { find: 'return this.withLedgerStatus(failed,', replace: 'throw e; return this.withLedgerStatus(failed,' },
     ] },
   { id: 'M27', file: 'escalation.js', what: 'una respuesta no autenticada cierra el ticket',
     find: "return { status: 'OPEN', outcome: 'REJECT', reason };", replace: 'return close(reason);' },
@@ -85,11 +85,62 @@ const MUTANTS = [
   { id: 'M32', file: 'verify.js', what: 'el verificador usa la evidencia sin revisar su forma (se cae con un registro nulo)',
     find: 'const recs = all.filter(wellFormedDecision).map(', replace: 'const recs = all.map(' },
   { id: 'M33', file: 'gateway.js', what: 'el gateway no pregunta al libro si el pago ya estaba registrado (confirmación perdida)',
-    find: "if (reason !== 'ALREADY_EXECUTED' || typeof this.ledger.status !== 'function') return out;", replace: 'return out;' },
+    find: 'const prior = this.ledgerStatus(requestId, action);', replace: 'const prior = null;' },
   { id: 'M34', file: 'decide.js', what: 'decide no comprueba que el destino esté dentro de la autorización',
     find: "if (Array.isArray(au.scope.destinations) && !au.scope.destinations.includes(a.destination)) reasons.push(", replace: 'if (false) reasons.push(' },
   { id: 'M35', file: 'decide.js', what: 'decide ignora las condiciones opcionales (datos del beneficiario)',
     find: 'const keys = conditionKeysOf(au);', replace: 'const keys = CONDITION_KEYS;' },
+  // v0.6.4 — hallazgos F1–F3 de la revisión del 16-oct-2026
+  { id: 'M36', file: 'gateway.js', what: 'el gateway acepta la autorización derivada de una escalación en solicitudes ordinarias',
+    find: 'const auth = stored && stored.derived_from === undefined ? stored : null;', replace: 'const auth = stored;' },
+  { id: 'M37', file: 'ledger.js', what: 'el libro no limita la autorización derivada a su solicitud, su acción y su autorización madre',
+    find: 'if (stored.derived_from !== undefined) {', replace: 'if (false) {' },
+  { id: 'M38', file: 'gateway.js', what: 'al cerrar el ticket (por ejemplo, denegado) la autorización derivada queda guardada',
+    find: "if (t.status === 'CLOSED') this.auths.remove(derivedId);", replace: '' },
+  { id: 'M39', file: 'verify.js', what: 'el verificador no marca fechas inválidas o anteriores a la decisión',
+    find: "else if (badTime.length) finding = 'TIMING_INVALID';", replace: '' },
+  { id: 'M40', file: 'gateway.js', what: 'el gateway no consulta el libro antes de informar REJECT/ESCALATE (confirmación perdida)',
+    find: "if (prior && !prior.ledger_status_unknown) return { ...base, executed: false, ledger: 'NOT_SENT', ...prior };", replace: '' },
+  { id: 'M41', file: 'gateway.js', what: 'la escalación no consulta el libro antes de volver a decidir (confirmación perdida)',
+    find: "if (prior && prior.already_posted) { closeTicket('ALREADY_POSTED_EARLIER');", replace: "if (false) { closeTicket('ALREADY_POSTED_EARLIER');" },
+  // v0.6.4 — segunda revisión (ChatGPT) de la v0.6.4 antes de publicar
+  { id: 'M42', file: 'gateway.js', what: 'el gateway da por pagada la operación si existe CUALQUIER asiento con ese identificador',
+    find: 'const sameOperation = e.amount === a.amount && e.currency === a.currency && e.destination === a.destination;', replace: 'const sameOperation = true;' },
+  { id: 'M43', file: 'gateway.js', what: 'la escalación no detecta que el identificador ya se usó para otra operación (cierra como pagada o queda abierta)',
+    find: "if (prior && prior.request_id_conflict) { closeTicket('REQUEST_ID_CONFLICT');", replace: "if (false) { closeTicket('REQUEST_ID_CONFLICT');" },
+  { id: 'M44', file: 'gateway.js', what: 'un ticket ya cerrado responde sin informar el pago que el libro tiene registrado',
+    find: 'if (!req || out.executed || out.already_posted || out.request_id_conflict) return out;', replace: 'return out;' },
+  { id: 'M45', file: 'gateway.js', what: 'la autorización derivada queda guardada aunque el libro no acepte el pago (ticket abierto)',
+    find: 'if (!res.accepted) this.auths.remove(re.authorization.id);', replace: '' },
+  // v0.6.4 — revisión previa (ChatGPT) de la r3
+  { id: 'M46', file: 'gateway.js', what: 'una excepción del sistema objetivo se propaga (sin resultado explícito ni limpieza)',
+    find: "} catch (e) { return { accepted: false, reason: 'TARGET_ERROR' }; }", replace: '} catch (e) { throw e; }' },
+  { id: 'M47', file: 'ledger.js', what: 'el libro no valida que el camino sea un texto corto',
+    find: "if (typeof posting.path !== 'string' || posting.path.length > 64) return 'POSTING_MALFORMED';", replace: '' },
+  { id: 'M48', file: 'ledger.js', what: 'el libro marca "ejecutado" y consume presupuesto antes de armar el asiento',
+    find: "try { e.entry_hash = sha256(canonical(e)); } catch {", replace: "this.executed.add(input.request_id); try { e.entry_hash = sha256(canonical(e)); } catch {" },
+  { id: 'M49', file: 'verify.js', what: 'el verificador ignora un asiento mal formado que cita una decisión conocida',
+    find: "else if (malformedFor.has(id)) finding = 'MALFORMED_POSTING';", replace: '' },
+  { id: 'M50', file: 'verify.js', what: 'con evidencia mal formada no atribuible, el verificador igual da CONSISTENT',
+    find: "if (unattributed > 0 && finding === 'CONSISTENT') finding = 'INCONCLUSIVE_MALFORMED_EVIDENCE';", replace: '' },
+  { id: 'M51', file: 'gateway.js', what: 'el gateway usa como clave del catálogo cualquier valor (heredados u objetos)',
+    find: "const own = (table, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(table, k) ? table[k] : undefined;", replace: 'const own = (table, k) => table[k];' },
+  // v0.6.4 — revisión previa (ChatGPT) de la r4
+  { id: 'M52', file: 'verify.js', what: 'el verificador atribuye asientos usando también decisiones con firma inválida',
+    find: 'const hashToReq = new Map(recs.filter(x => x.valid).map(', replace: 'const hashToReq = new Map(recs.map(' },
+  { id: 'M53', file: 'gateway.js', what: 'una falla de la consulta de estado del libro se propaga como excepción',
+    find: 'try { st = this.ledger.status(requestId); } catch { return { ledger_status_unknown: true }; }', replace: 'st = this.ledger.status(requestId);' },
+  { id: 'M54', file: 'gateway.js', what: 'tras una excepción al enviar y sin poder consultar el libro, se informa un rechazo en vez de un resultado desconocido',
+    find: "if (prior.ledger_status_unknown && out.ledger === 'REFUSED:TARGET_ERROR') return { ...out, ...prior, ledger: 'OUTCOME_UNKNOWN' };", replace: '' },
+  { id: 'M55', file: 'decide.js', what: 'decide recorre una entrada anidada de más antes de validarla (se cae)',
+    find: 'if (tooDeep(p, MAX_INPUT_DEPTH)) {', replace: 'if (false) {' },
+  // v0.6.4 — revisión previa (ChatGPT) de la r5
+  { id: 'M56', file: 'gateway.js', what: 'el nuevo intento pierde que el resultado anterior sigue desconocido',
+    find: 'if (prior && prior.ledger_status_unknown) base.ledger_status_unknown = true;', replace: '' },
+  { id: 'M57', file: 'gateway.js', what: 'el gateway usa una respuesta "ejecutado" del libro sin validar el asiento',
+    find: "if (!isObj(e) || typeof e.seq !== 'number') return { ledger_status_unknown: true };", replace: '' },
+  { id: 'M58', file: 'gateway.js', what: 'el encolado copia una solicitud anidada de más sin revisarla (se cae)',
+    find: "if (tooDeep(request, MAX_INPUT_DEPTH)) return { queued: false, decision_at_enqueue: 'REJECT', reason: 'MALFORMED_REQUEST' };", replace: '' },
 ];
 
 function runMutant(m, srcDir = __dirname) {

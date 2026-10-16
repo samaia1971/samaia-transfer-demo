@@ -40,6 +40,15 @@ function verify({ decisions, ledgerExport, boundaryPublicKey, anchoredHead, maxD
   const entries = rawEntries.filter(wellFormedEntry);
   const malformed = { decisions: all.length - recs.length, ledger_entries: rawEntries.length - entries.length };
   const ids = [...new Set([...recs.map(x => x.record.bound_to.request_id), ...entries.map(e => e.request_id)])];
+  // v0.6.4: un asiento mal formado no se convierte en evidencia de ausencia. Si cita una decisión conocida, afecta a esa
+  // solicitud (MALFORMED_POSTING); si no se puede atribuir, ningún resultado favorable es concluyente.
+  // v0.6.4: solo decisiones con firma válida sirven para atribuir (una copia con firma inválida no desvía la atribución).
+  const hashToReq = new Map(recs.filter(x => x.valid).map(x => [x.record.decision_hash, x.record.bound_to.request_id]));
+  const malformedFor = new Set(); let unattributed = 0;
+  for (const e of rawEntries.filter(x => !wellFormedEntry(x))) {
+    const h = e && typeof e === 'object' && typeof e.decision_hash === 'string' ? e.decision_hash : null;
+    if (h && hashToReq.has(h)) malformedFor.add(hashToReq.get(h)); else unattributed++;
+  }
 
   const requests = ids.map(id => {
     const rs = recs.filter(x => x.record.bound_to.request_id === id);
@@ -47,25 +56,33 @@ function verify({ decisions, ledgerExport, boundaryPublicKey, anchoredHead, maxD
     const backing = new Map(rs.filter(x => x.valid && x.record.decision === 'CONTINUE').map(x => [x.record.decision_hash, x.record]));
     let finding;
     if (!chain.valid) finding = 'UNVERIFIABLE';
+    else if (malformedFor.has(id)) finding = 'MALFORMED_POSTING';
     else {
       const unbacked = posts.filter(p => !p.decision_hash || !backing.has(p.decision_hash));
-      const stale = posts.filter(p => backing.has(p.decision_hash)
-        && (Date.parse(p.posted_at) - Date.parse(backing.get(p.decision_hash).bound_to.state_observed_at)) / 1000 > maxDecisionAgeSeconds);
+      // v0.6.4: la fecha del asiento tiene que ser válida y no anterior al estado en que se basó la decisión.
+      const ageOf = p => (Date.parse(p.posted_at) - Date.parse(backing.get(p.decision_hash).bound_to.state_observed_at)) / 1000;
+      const badTime = posts.filter(p => backing.has(p.decision_hash)
+        && (typeof p.posted_at !== 'string' || typeof backing.get(p.decision_hash).bound_to.state_observed_at !== 'string'
+          || !Number.isFinite(ageOf(p)) || ageOf(p) < 0));
+      const stale = posts.filter(p => backing.has(p.decision_hash) && !badTime.includes(p) && ageOf(p) > maxDecisionAgeSeconds);
       const differs = posts.filter(p => backing.has(p.decision_hash) && !sameEffect(p, backing.get(p.decision_hash).bound_to.action));
       const hashes = posts.map(p => p.decision_hash).filter(Boolean);
       if (unbacked.length && rs.some(x => x.record.decision !== 'CONTINUE')) finding = 'BLOCKED_BUT_POSTED';
       else if (unbacked.length) finding = 'POSTED_WITHOUT_VALID_DECISION';
       else if (differs.length) finding = 'EFFECT_DIFFERS_FROM_AUTHORIZED';
+      else if (badTime.length) finding = 'TIMING_INVALID';
       else if (stale.length) finding = 'EXECUTED_ON_STALE_DECISION';
       else if (hashes.length !== new Set(hashes).size) finding = 'DECISION_REUSED';
       else if (posts.length > 1) finding = 'DUPLICATE_EXECUTION';
       else finding = 'CONSISTENT';
+      if (unattributed > 0 && finding === 'CONSISTENT') finding = 'INCONCLUSIVE_MALFORMED_EVIDENCE';
     }
+    const conclusive = chain.valid && finding !== 'MALFORMED_POSTING' && finding !== 'INCONCLUSIVE_MALFORMED_EVIDENCE';
     return {
       request_id: id,
       authorized: rs.map(x => ({ decision: x.record.decision, path: x.path, at: x.at, signature_valid: x.valid })),
       crossed_boundary: posts.filter(p => backing.has(p.decision_hash)).length,
-      target_effect: chain.valid ? (posts.length ? 'POSTED' : 'NOT_POSTED') : 'UNKNOWN',
+      target_effect: conclusive ? (posts.length ? 'POSTED' : 'NOT_POSTED') : 'UNKNOWN',
       postings: posts.map(p => ({ seq: p.seq, amount: p.amount, currency: p.currency, destination: p.destination, path_declared: p.path, posted_at: p.posted_at, backed_by_decision: backing.has(p.decision_hash) })),
       finding,
       coverage: {

@@ -1,5 +1,5 @@
 {
-  "version": "samaia-transfer-demo/0.6.3",
+  "version": "samaia-transfer-demo/0.6.4",
   "scenarios": [
     {
       "id": "A1_normal",
@@ -289,7 +289,12 @@
       "caught_by": [
         "P4",
         "V4",
-        "R20"
+        "R20",
+        "R22",
+        "R23",
+        "R24",
+        "R30",
+        "R31"
       ]
     },
     {
@@ -307,7 +312,9 @@
       "what": "decide ignora que la cuenta destino está congelada o cerrada",
       "caught": true,
       "caught_by": [
-        "P6"
+        "P6",
+        "R27",
+        "R38"
       ]
     },
     {
@@ -368,7 +375,11 @@
         "R3c",
         "R15",
         "R18",
-        "R19"
+        "R24",
+        "R26",
+        "R29",
+        "R33",
+        "R36"
       ]
     },
     {
@@ -377,7 +388,9 @@
       "what": "la API legacy deja de pasar por decide en la versión protegida",
       "caught": true,
       "caught_by": [
-        "P3"
+        "P3",
+        "R36",
+        "R38"
       ]
     },
     {
@@ -386,7 +399,10 @@
       "what": "la cola protegida decide al encolar y libera días después con esa decisión vieja",
       "caught": true,
       "caught_by": [
-        "P6"
+        "P6",
+        "R36",
+        "R38",
+        "R39"
       ]
     },
     {
@@ -404,7 +420,9 @@
         "R5",
         "R13",
         "R17",
-        "R18"
+        "R18",
+        "R25",
+        "R32"
       ]
     },
     {
@@ -416,7 +434,8 @@
         "V4",
         "R1a",
         "R18",
-        "R19"
+        "R29",
+        "R36"
       ]
     },
     {
@@ -557,7 +576,12 @@
       "caught": true,
       "caught_by": [
         "R13",
-        "R19"
+        "R19",
+        "R27",
+        "R28",
+        "R30",
+        "R31",
+        "R36"
       ]
     },
     {
@@ -603,7 +627,13 @@
       "caught": true,
       "caught_by": [
         "R18",
-        "R19"
+        "R26",
+        "R28",
+        "R29",
+        "R31",
+        "R36",
+        "R38",
+        "R39"
       ]
     },
     {
@@ -623,6 +653,224 @@
       "caught_by": [
         "V4",
         "R20"
+      ]
+    },
+    {
+      "id": "M36",
+      "file": "gateway.js",
+      "what": "el gateway acepta la autorización derivada de una escalación en solicitudes ordinarias",
+      "caught": true,
+      "caught_by": [
+        "R24"
+      ]
+    },
+    {
+      "id": "M37",
+      "file": "ledger.js",
+      "what": "el libro no limita la autorización derivada a su solicitud, su acción y su autorización madre",
+      "caught": true,
+      "caught_by": [
+        "R24"
+      ]
+    },
+    {
+      "id": "M38",
+      "file": "gateway.js",
+      "what": "al cerrar el ticket (por ejemplo, denegado) la autorización derivada queda guardada",
+      "caught": true,
+      "caught_by": [
+        "R30"
+      ]
+    },
+    {
+      "id": "M39",
+      "file": "verify.js",
+      "what": "el verificador no marca fechas inválidas o anteriores a la decisión",
+      "caught": true,
+      "caught_by": [
+        "R25"
+      ]
+    },
+    {
+      "id": "M40",
+      "file": "gateway.js",
+      "what": "el gateway no consulta el libro antes de informar REJECT/ESCALATE (confirmación perdida)",
+      "caught": true,
+      "caught_by": [
+        "R27"
+      ]
+    },
+    {
+      "id": "M41",
+      "file": "gateway.js",
+      "what": "la escalación no consulta el libro antes de volver a decidir (confirmación perdida)",
+      "caught": true,
+      "caught_by": [
+        "R27",
+        "R28"
+      ]
+    },
+    {
+      "id": "M42",
+      "file": "gateway.js",
+      "what": "el gateway da por pagada la operación si existe CUALQUIER asiento con ese identificador",
+      "caught": true,
+      "caught_by": [
+        "R29"
+      ]
+    },
+    {
+      "id": "M43",
+      "file": "gateway.js",
+      "what": "la escalación no detecta que el identificador ya se usó para otra operación (cierra como pagada o queda abierta)",
+      "caught": true,
+      "caught_by": [
+        "R29"
+      ]
+    },
+    {
+      "id": "M44",
+      "file": "gateway.js",
+      "what": "un ticket ya cerrado responde sin informar el pago que el libro tiene registrado",
+      "caught": true,
+      "caught_by": [
+        "R28",
+        "R36"
+      ]
+    },
+    {
+      "id": "M45",
+      "file": "gateway.js",
+      "what": "la autorización derivada queda guardada aunque el libro no acepte el pago (ticket abierto)",
+      "caught": true,
+      "caught_by": [
+        "R24",
+        "R30",
+        "R31"
+      ]
+    },
+    {
+      "id": "M46",
+      "file": "gateway.js",
+      "what": "una excepción del sistema objetivo se propaga (sin resultado explícito ni limpieza)",
+      "caught": true,
+      "caught_by": [
+        "R31",
+        "R36",
+        "R38",
+        "R39"
+      ]
+    },
+    {
+      "id": "M47",
+      "file": "ledger.js",
+      "what": "el libro no valida que el camino sea un texto corto",
+      "caught": true,
+      "caught_by": [
+        "R33"
+      ]
+    },
+    {
+      "id": "M48",
+      "file": "ledger.js",
+      "what": "el libro marca \"ejecutado\" y consume presupuesto antes de armar el asiento",
+      "caught": true,
+      "caught_by": [
+        "R33"
+      ]
+    },
+    {
+      "id": "M49",
+      "file": "verify.js",
+      "what": "el verificador ignora un asiento mal formado que cita una decisión conocida",
+      "caught": true,
+      "caught_by": [
+        "R32",
+        "R35"
+      ]
+    },
+    {
+      "id": "M50",
+      "file": "verify.js",
+      "what": "con evidencia mal formada no atribuible, el verificador igual da CONSISTENT",
+      "caught": true,
+      "caught_by": [
+        "R32"
+      ]
+    },
+    {
+      "id": "M51",
+      "file": "gateway.js",
+      "what": "el gateway usa como clave del catálogo cualquier valor (heredados u objetos)",
+      "caught": true,
+      "caught_by": [
+        "R34"
+      ]
+    },
+    {
+      "id": "M52",
+      "file": "verify.js",
+      "what": "el verificador atribuye asientos usando también decisiones con firma inválida",
+      "caught": true,
+      "caught_by": [
+        "R35"
+      ]
+    },
+    {
+      "id": "M53",
+      "file": "gateway.js",
+      "what": "una falla de la consulta de estado del libro se propaga como excepción",
+      "caught": true,
+      "caught_by": [
+        "R36",
+        "R38"
+      ]
+    },
+    {
+      "id": "M54",
+      "file": "gateway.js",
+      "what": "tras una excepción al enviar y sin poder consultar el libro, se informa un rechazo en vez de un resultado desconocido",
+      "caught": true,
+      "caught_by": [
+        "R36",
+        "R38",
+        "R39"
+      ]
+    },
+    {
+      "id": "M55",
+      "file": "decide.js",
+      "what": "decide recorre una entrada anidada de más antes de validarla (se cae)",
+      "caught": true,
+      "caught_by": [
+        "R37"
+      ]
+    },
+    {
+      "id": "M56",
+      "file": "gateway.js",
+      "what": "el nuevo intento pierde que el resultado anterior sigue desconocido",
+      "caught": true,
+      "caught_by": [
+        "R38"
+      ]
+    },
+    {
+      "id": "M57",
+      "file": "gateway.js",
+      "what": "el gateway usa una respuesta \"ejecutado\" del libro sin validar el asiento",
+      "caught": true,
+      "caught_by": [
+        "R39"
+      ]
+    },
+    {
+      "id": "M58",
+      "file": "gateway.js",
+      "what": "el encolado copia una solicitud anidada de más sin revisarla (se cae)",
+      "caught": true,
+      "caught_by": [
+        "R40"
       ]
     }
   ]
