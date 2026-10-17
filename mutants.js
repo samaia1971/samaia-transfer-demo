@@ -1,4 +1,4 @@
-// Meta-prueba del "detector roto" (v0.5; 23 mutantes en v0.6; 28 en v0.6.1; 35 en v0.6.3; 58 desde v0.6.4) (pruebas de mutación).
+// Meta-prueba del "detector roto" (v0.5; 23 mutantes en v0.6; 28 en v0.6.1; 35 en v0.6.3; 58 en v0.6.4; 61 desde v0.6.5) (pruebas de mutación).
 // Pregunta: si alguien rompe un control sin querer, ¿las pruebas lo notan?
 // Para cada mutante se copia la demo a una carpeta temporal, se rompe UNA línea de un control
 // (o, en un caso, las dos líneas de un mismo defecto) y se corre la batería completa (checks.js). Si ninguna comprobación falla, el detector está ciego
@@ -141,6 +141,13 @@ const MUTANTS = [
     find: "if (!isObj(e) || typeof e.seq !== 'number') return { ledger_status_unknown: true };", replace: '' },
   { id: 'M58', file: 'gateway.js', what: 'el encolado copia una solicitud anidada de más sin revisarla (se cae)',
     find: "if (tooDeep(request, MAX_INPUT_DEPTH)) return { queued: false, decision_at_enqueue: 'REJECT', reason: 'MALFORMED_REQUEST' };", replace: '' },
+  // v0.6.5 — límite conocido de la v0.6.4 publicada
+  { id: 'M59', file: 'gateway.js', what: 'un asiento sin monto, moneda o destino válidos se compara como otra operación (falso REQUEST_ID_CONFLICT)',
+    find: "if (!(typeof e.amount === 'number' && Number.isFinite(e.amount) && typeof e.currency === 'string' && typeof e.destination === 'string')) return { ledger_status_unknown: true };", replace: '' },
+  { id: 'M60', file: 'gateway.js', what: 'el gateway acepta como evidencia el asiento de otra solicitud (no compara el request_id)',
+    find: 'if (e.request_id !== requestId) return { ledger_status_unknown: true };', replace: '' },
+  { id: 'M61', file: 'gateway.js', what: 'el gateway concilia con el libro una solicitud sin identificador válido (undefined === undefined)',
+    find: "if (typeof requestId !== 'string' || requestId.length === 0) return null;", replace: '' },
 ];
 
 function runMutant(m, srcDir = __dirname) {

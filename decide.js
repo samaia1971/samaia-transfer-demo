@@ -130,7 +130,7 @@ function requestHashOf(p) {
 
 function finish(p, inputHash, requestHash, decision, reasons) {
   const record = {
-    version: 'samaia-transfer-demo/0.6.4',
+    version: 'samaia-transfer-demo/0.6.5',
     decision, reasons,
     bound_to: {
       request_id: p && p.request_id || null,

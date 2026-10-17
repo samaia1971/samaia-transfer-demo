@@ -1,6 +1,6 @@
 {
   "name": "samaia-transfer-demo",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "private": true,
   "description": "SAMAIA — demo experimental de admisibilidad en el Execution Boundary (caso transferencia). Simulado.",
   "engines": { "node": ">=18" },

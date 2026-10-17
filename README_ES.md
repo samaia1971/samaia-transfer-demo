@@ -1,4 +1,4 @@
-# Demo: caso transferencia / reembolso — propuesta experimental v0.6.4 (16-oct-2026)
+# Demo: caso transferencia / reembolso — propuesta experimental v0.6.5 (17-oct-2026)
 
 **En cinco líneas.** Un agente de IA quiere pagar 4.000 USD con una autorización que ya tiene.
 La demo decide en el último momento si puede hacerlo (CONTINUE), si debe ir a un humano (ESCALATE) o si no (REJECT).
@@ -7,7 +7,7 @@ Un verificador independiente revisa el **libro contable**, no el log del agente,
 Todo es simulado: es un ejemplo trabajado del patrón dentro de su propio modelo, no una solución general. Los límites están al final.
 
 ```
-node --test       → 166/166  (40 de la v0.4 + 64 comprobaciones + 58 controles rotos a propósito + 4 de concurrencia con procesos reales)
+node --test       → 172/172  (40 de la v0.4 + 67 comprobaciones + 61 controles rotos a propósito + 4 de concurrencia con procesos reales)
 node run-v06.js   → tabla vulnerable vs. protegida, informe del verificador y meta-prueba (escribe en out/, no toca la evidencia congelada)
 node run.js       → los 10 escenarios de la v0.4 y la latencia de decide() (escribe en out/)
 sha256sum -c MANIFEST.sha256   → comprueba que ningún archivo cambió
@@ -124,6 +124,19 @@ La v0.6.3 se publicó **antes** de pasar por su propia revisión. Esa revisión 
 
 También se precisó la redacción de los límites: qué prueba la firma del aprobador, qué significa "independiente", cómo compara una escalación las condiciones (bajo → alto → bajo), límites sin unidad de moneda y alcance de los mutantes.
 
+## v0.6.4 → v0.6.5: límite conocido de la v0.6.4 publicada (17-oct-2026)
+
+La revisión de ChatGPT de la v0.6.4 encontró un hallazgo de severidad baja que se publicó como límite conocido. Se reprodujo antes de corregirlo: con la confirmación perdida, el pago **sí** quedaba registrado en el libro, pero la demo lo informaba como REQUEST_ID_CONFLICT.
+
+| # | Hallazgo en v0.6.4 | Corrección en v0.6.5 | Comprobación |
+|---|---|---|---|
+| H1 (baja, solo con inyección) | Una respuesta de estado "ejecutado" con `seq` numérico pero sin monto, moneda o destino válidos se comparaba como otra operación: se informaba REQUEST_ID_CONFLICT y se cerraba el ticket de escalación por ese motivo, aunque el pago se hubiera hecho | Ese asiento cuenta como estado desconocido (OUTCOME_UNKNOWN / `ledger_status_unknown`); el ticket no se cierra por ese motivo (sigue sujeto al plazo normal de la escalación) y, cuando la consulta responde bien, se informa el pago ya hecho. No hay segundo pago ni antes ni después | R41 (mutante M59) |
+| H2 (baja, solo con inyección; revisión previa, ChatGPT; Grok no encontró fallas) | Existía desde la v0.6.3: si la consulta de estado devolvía el asiento de **otra** solicitud, se tomaba como evidencia de la consultada. Con la misma operación la escalación se cerraba como "ya pagada"; con otra, como REQUEST_ID_CONFLICT; en ambos casos esa solicitud nunca se había pagado | El asiento debe traer el mismo `request_id` consultado; si no, el estado es desconocido y la solicitud se resuelve por su cuenta (se paga una sola vez) | R42 (mutante M60) |
+| H4 (baja, solo con inyección; revisión previa r2, ChatGPT; Grok no encontró fallas) | Una solicitud sin identificador válido (ausente, null, vacío o un número), rechazada como INPUT_INVALID, se informaba además como "ya pagada" si el libro respondía con un asiento con el mismo identificador inválido o sin identificador (undefined === undefined). No había pago | Sin identificador válido no se consulta el libro: el resultado es solo el rechazo | R43 (mutante M61) |
+| H3 (documental, revisión previa, ChatGPT) | La lista de archivos decía 64 comprobaciones y 58 mutantes | Cifras actualizadas | — |
+
+Las decisiones firmadas dicen 0.6.5.
+
 ## Archivos
 
 - `decide.js` — la decisión. Las reglas son las de la v0.4. Desde la v0.6, el registro firmado incluye la acción autorizada; desde la v0.6.3, el hash de la política, los destinos permitidos y la condición opcional de datos del beneficiario.
@@ -132,8 +145,8 @@ También se precisó la redacción de los límites: qué prueba la firma del apr
 - `gateway.js` — capa de ejecución en versión vulnerable y protegida, con los cuatro caminos y el catálogo de operaciones (v0.6.1).
 - `ledger.js` — el sistema objetivo, con sus controles al registrar, la consulta `status()` y la cadena de hashes.
 - `verify.js` — verificador independiente. No da un PASS/FAIL global: informa por solicitud, con su cobertura, y declara lo que no puede verificar.
-- `checks.js` — 12 escenarios y 64 comprobaciones: P (protegida), L (libro), V (verificador) y R (revisiones asistidas por IA, escalación, confirmación perdida y beneficiario).
-- `mutants.js` — meta-prueba del "detector roto": 58 controles rotos a propósito (decide, libro, gateway, escalación, verificador y cadena), todos detectados.
+- `checks.js` — 12 escenarios y 67 comprobaciones: P (protegida), L (libro), V (verificador) y R (revisiones asistidas por IA, escalación, confirmación perdida y beneficiario).
+- `mutants.js` — meta-prueba del "detector roto": 61 controles rotos a propósito (decide, libro, gateway, escalación, verificador y cadena), todos detectados.
 - `test-concurrency.js` y `concurrency-client.js` (v0.6.3) — prueba con procesos reales y su contraprueba.
 - `.github/workflows/test.yml` (v0.6.3) — integración continua.
 - `MANIFEST.sha256` — hash de cada archivo. Se comprueba con `sha256sum -c MANIFEST.sha256`.
@@ -160,7 +173,7 @@ También se precisó la redacción de los límites: qué prueba la firma del apr
 - **Verificador "independiente":** independiente del log del gateway; no es una corroboración independiente de que el libro diga la verdad.
 - **Evidencia de no ejecución:** viene del libro simulado. Si el libro real omitió un pago desde el origen, el verificador no lo ve; haría falta una fuente externa (extracto o conciliación).
 - **Tope acumulado:** se lleva por autorización (y sus derivadas de escalación). No hay límites diarios ni por destino.
-- **Artefacto congelado:** esta publicación, con su fecha y `MANIFEST.sha256`, es la versión congelada de la v0.6.4. `resultados_v06.json` es la evidencia congelada; `out/` es lo que genera cada corrida.
+- **Artefacto congelado:** esta publicación, con su fecha y `MANIFEST.sha256`, es la versión congelada de la v0.6.5. `resultados_v06.json` es la evidencia congelada; `out/` es lo que genera cada corrida.
 - **El camino de cada asiento lo declara quien envía el pago.** No va firmado.
 - **La versión del estado es una sola para todo** (señalado por Grok). Cualquier cambio de estado invalida las decisiones pendientes, aunque no les afecte. Es conservador (rechaza de más, nunca de menos). Un sistema real necesitaría una versión por cada dato relevante. Esto vale entre decidir y registrar; una escalación, en cambio, compara los valores de las condiciones revisadas al resolver: si un valor cambia y vuelve al revisado (bajo → alto → bajo) antes de resolver, la aprobación sigue valiendo.
 - **Si las condiciones cambian durante una escalación, se rechaza** (incluido el cambio de las condiciones que el aprobador revisó). No existe un camino para que el humano apruebe explícitamente bajo las condiciones nuevas: hay que hacer una solicitud nueva.
@@ -168,10 +181,10 @@ También se precisó la redacción de los límites: qué prueba la firma del apr
 - **Datos del beneficiario y destinos permitidos:** solo se exigen si la autorización los fijó. Una autorización sin ellos no los controla.
 - **El catálogo de operaciones** es una tabla simulada con dos tipos. En un sistema real lo define el sistema que ejecuta la operación.
 - **Límites sin unidad de moneda.** Los topes de la autorización y el umbral de revisión humana son números; la moneda va firmada y se compara al registrar, pero los topes no se separan por moneda.
-- **La recuperación de una confirmación perdida depende de la consulta de estado del libro.** Si el envío falla con una excepción y la consulta también falla, el resultado es OUTCOME_UNKNOWN (nunca "no enviado"); mientras la consulta siga caída, los intentos siguientes conservan la marca `ledger_status_unknown`; cuando responda, se informa el pago ya hecho. Una respuesta de estado que no es un objeto, o cuyo "executed" no es booleano, o que dice "ejecutado" sin un asiento con `seq` numérico, cuenta como desconocida. **Límite conocido (encontrado por la revisión de la v0.6.4 publicada):** un asiento con `seq` numérico pero sin los datos de la operación (monto, moneda, destino) se compara como si fuera otra operación y se informa como REQUEST_ID_CONFLICT, cerrando el ticket por ese motivo; no se hace ningún pago. El libro original nunca produce esa respuesta; solo aparece si se inyecta.
+- **La recuperación de una confirmación perdida depende de la consulta de estado del libro.** Si el envío falla con una excepción y la consulta también falla, el resultado es OUTCOME_UNKNOWN (nunca "no enviado"); mientras la consulta siga caída, los intentos siguientes conservan la marca `ledger_status_unknown`; cuando responda, se informa el pago ya hecho. Una respuesta de estado que no es un objeto, o cuyo "executed" no es booleano, o que dice "ejecutado" sin un asiento con `seq` numérico, cuenta como desconocida. Desde la v0.6.5 también cuenta como desconocido un asiento cuyo `request_id` no es el consultado, o que no trae monto numérico finito y moneda y destino de texto: nunca se lee como "ya pagado" ni como REQUEST_ID_CONFLICT, y no cierra un ticket de escalación por ese motivo (el ticket sigue sujeto al plazo normal de la escalación). Solo un asiento completo de este mismo identificador con otra operación es REQUEST_ID_CONFLICT. Una solicitud sin identificador válido (texto no vacío) se rechaza como INPUT_INVALID y nunca se concilia con el libro.
 - **Profundidad de la entrada:** hasta 32 niveles; una entrada más profunda se rechaza como INPUT_INVALID antes de calcular su hash.
 - **Evidencia mal formada del libro:** nunca se lee como ausencia. Un asiento que cita una decisión conocida con firma válida deja esa solicitud en MALFORMED_POSTING; uno que no se puede atribuir deja los resultados favorables en INCONCLUSIVE_MALFORMED_EVIDENCE.
-- **Mutantes.** Los 58 mutantes muestran que esos controles rotos se detectan; no prueban una cobertura adversarial completa.
+- **Mutantes.** Los 61 mutantes muestran que esos controles rotos se detectan; no prueban una cobertura adversarial completa.
 - **Reintentos de una escalación aprobada:** el ticket sigue abierto si el libro rechaza el pago. Que se pague una sola vez depende del control del libro, no del ticket.
 
 ## Historial
@@ -185,5 +198,6 @@ También se precisó la redacción de los límites: qué prueba la firma del apr
 - v0.6.1 → v0.6.2 (13-oct-2026): solo se corrigió el manifiesto (un salto de línea agregado por el editor web de GitHub cambiaba el hash de un archivo). El código no cambió.
 - v0.6.2 → v0.6.3 (16-oct-2026): los nueve hallazgos de la revisión asistida por IA del 14-oct-2026, confirmación perdida, datos del beneficiario, concurrencia con procesos reales, cobertura en el informe del verificador, integración continua y licencia completa.
 - v0.6.3 → v0.6.4 (16-oct-2026): hallazgos F1–F3 de la revisión asistida por IA de la v0.6.3 (autorización derivada de un solo uso, fechas en el verificador, confirmación perdida), segunda revisión antes de publicar (conciliar primero; conflicto de identificador) y precisión de los límites. Primera corrida de CI en Node 18 y 20: la comprobación que atrapa al mutante M55 dependía de desbordar la pila, algo que cambia según la versión de Node; ahora comprueba que una entrada de 100 niveles se rechaza por su profundidad.
+- v0.6.4 → v0.6.5 (17-oct-2026): el límite conocido de la v0.6.4 publicada (asiento incompleto en la consulta de estado → estado desconocido, no conflicto).
 
 La primera versión pública (v0.1, cuatro casos) está en https://github.com/germanandres41-netizen/samaia-proof-surface.

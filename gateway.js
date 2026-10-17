@@ -112,6 +112,9 @@ class Gateway {
   // Si es otra, se informa un conflicto explícito: el identificador ya corresponde a una operación diferente.
   ledgerStatus(requestId, action) {
     if (typeof this.ledger.status !== 'function') return null;
+    // v0.6.5 (revisión previa r2, ChatGPT): sin un identificador válido (texto no vacío, la misma regla de decide) no hay
+    // pago que conciliar: no se consulta el libro, y ninguna respuesta suya se atribuye a esta solicitud.
+    if (typeof requestId !== 'string' || requestId.length === 0) return null;
     let st;
     try { st = this.ledger.status(requestId); } catch { return { ledger_status_unknown: true }; }   // v0.6.4: la consulta falló
     if (!st || typeof st !== 'object' || typeof st.executed !== 'boolean') return { ledger_status_unknown: true };
@@ -119,6 +122,11 @@ class Gateway {
     // v0.6.4: una respuesta "ejecutado" sin asiento válido no se usa: el estado queda desconocido (no tumba la cola).
     const e = st.entry, a = isObj(action) ? action : {};
     if (!isObj(e) || typeof e.seq !== 'number') return { ledger_status_unknown: true };
+    // v0.6.5 (revisión previa, ChatGPT): un asiento que no trae el identificador consultado no es evidencia sobre esta solicitud.
+    if (e.request_id !== requestId) return { ledger_status_unknown: true };
+    // v0.6.5: un asiento sin los datos de la operación (monto, moneda, destino) no permite decir si es esta operación u otra:
+    // el estado queda desconocido, no se informa REQUEST_ID_CONFLICT ni se cierra el ticket por ese motivo.
+    if (!(typeof e.amount === 'number' && Number.isFinite(e.amount) && typeof e.currency === 'string' && typeof e.destination === 'string')) return { ledger_status_unknown: true };
     const sameOperation = e.amount === a.amount && e.currency === a.currency && e.destination === a.destination;
     return sameOperation ? { already_posted: true, posted_entry: e.seq }
       : { request_id_conflict: true, posted_entry: e.seq, posted_effect: { amount: e.amount, currency: e.currency, destination: e.destination } };

@@ -660,6 +660,74 @@ check('R40', 'revisión previa r5 #3: una solicitud anidada 10.000 niveles no tu
   return (res[0].queued === false && res[2].queued === false && [res[1], res[3]].every(o => !o.executed)) || JSON.stringify(res.map(o => o.queued === undefined ? o.decision + '/' + o.executed : 'queued=' + o.queued));
 });
 
+// v0.6.5 — límite conocido de la v0.6.4 publicada (revisión de ChatGPT, 16-oct-2026): asiento con seq pero sin datos de la operación.
+check('R41', 'v0.6.5: el libro responde "ejecutado" con un asiento sin monto, moneda o destino válidos → estado desconocido (OUTCOME_UNKNOWN / ledger_status_unknown), nunca REQUEST_ID_CONFLICT; el ticket no se cierra por eso; no hay segundo pago', () => {
+  // Los asientos traen el request_id correcto: lo que falta o es inválido son los datos de la operación (el request_id ajeno lo cubre R42).
+  const partial = [e => ({ seq: e.seq, request_id: e.request_id }), e => ({ seq: e.seq, request_id: e.request_id, amount: e.amount }),
+    e => ({ seq: e.seq, request_id: e.request_id, amount: NaN, currency: e.currency, destination: e.destination }),
+    e => ({ seq: e.seq, request_id: e.request_id, amount: e.amount, currency: e.currency, destination: { id: e.destination } })];
+  const out = [];
+  for (const [i, strip] of partial.entries()) {
+    // directo: el envío registra y la confirmación se pierde con una excepción
+    const w = world('protected'), realPost = w.ledger.post.bind(w.ledger); let first = true;
+    w.ledger.post = (p, at) => { const r = realPost(p, at); if (first) { first = false; throw new Error('LOST'); } return r; };
+    const realStatus = w.ledger.status.bind(w.ledger);
+    w.ledger.status = id => { const st = realStatus(id); return st.executed ? { executed: true, entry: strip(st.entry) } : st; };
+    const r = w.issue('R41-' + i);
+    let o1, o2; try { o1 = w.gw.directTool(r, WED); o2 = w.gw.directTool(r, sec(WED, 2)); } catch (e) { return 'direct THROW: ' + e.message; }
+    const directOk = o1.ledger === 'OUTCOME_UNKNOWN' && o1.ledger_status_unknown === true && !o1.request_id_conflict
+      && !o2.executed && o2.ledger_status_unknown === true && !o2.request_id_conflict && w.ledger.entries.length === 1;
+    // escalación: pagada con confirmación perdida; la consulta devuelve el asiento incompleto; luego responde bien
+    const we = world('protected'), oe = escalate8000(we, 'R41e-' + i); loseFirstConfirmation(we);
+    const realStatusE = we.ledger.status.bind(we.ledger); let broken = true;
+    we.ledger.status = id => { const st = realStatusE(id); return broken && st.executed ? { executed: true, entry: strip(st.entry) } : st; };
+    let e1, e2; try { e1 = we.gw.resolveEscalation(oe.ticket.ticket_id, approveResp(we, oe), sec(WED, 60)); broken = false;
+      e2 = we.gw.resolveEscalation(oe.ticket.ticket_id, approveResp(we, oe), sec(WED, 62)); } catch (e) { return 'escalation THROW: ' + e.message; }
+    const escOk = !e1.executed && !e1.request_id_conflict && e1.reason !== 'REQUEST_ID_CONFLICT' && e1.ticket_status !== 'CLOSED'
+      && e2.already_posted === true && e2.reason === 'ALREADY_POSTED_EARLIER' && e2.ticket_status === 'CLOSED' && we.ledger.entries.length === 1;
+    out.push({ i, directOk, escOk, o1: o1.ledger + '/' + o1.request_id_conflict, e1: e1.ledger + '/' + e1.reason + '/' + e1.ticket_status, e2: e2.reason });
+  }
+  return out.every(x => x.directOk && x.escOk) || JSON.stringify(out.filter(x => !x.directOk || !x.escOk));
+});
+
+check('R42', 'v0.6.5 revisión previa (ChatGPT): la consulta de estado devuelve el asiento de OTRA solicitud → estado desconocido, nunca "ya pagado" ni REQUEST_ID_CONFLICT; la solicitud consultada se resuelve por su cuenta y no hay doble pago', () => {
+  const out = [];
+  for (const amtB of [4000, 3000]) {   // B igual a A (monto, moneda, destino) o distinta
+    const w = world('protected'); w.gw.directTool(w.issue('R42B', { action: { amount: amtB } }), WED);
+    const o = escalateRiskUp(w, 'R42A');
+    const realStatus = w.ledger.status.bind(w.ledger); w.ledger.status = () => realStatus('R42B');
+    let r; try { r = w.gw.resolveEscalation(o.ticket.ticket_id, approveResp(w, o), sec(WED, 3)); } catch (e) { return 'THROW: ' + e.message; }
+    out.push({ amtB, ok: !r.already_posted && !r.request_id_conflict && r.reason !== 'ALREADY_POSTED_EARLIER' && r.reason !== 'REQUEST_ID_CONFLICT'
+      && r.executed === true && w.ledger.entries.length === 2 && w.ledger.entries.filter(e => e.request_id === 'R42A').length === 1, r: r.reason + '/' + r.ledger + '/' + r.ticket_status });
+  }
+  // camino directo: A se rechaza (cuenta congelada) y la consulta devuelve el asiento de B, o un asiento sin request_id
+  for (const strip of [e => e, e => { const { request_id, ...rest } = e; return rest; }]) {
+    const w = world('protected'); w.gw.directTool(w.issue('R42B2'), WED);
+    w.stateSource.set({ account_status: 'frozen' });
+    const realStatus = w.ledger.status.bind(w.ledger); w.ledger.status = () => { const st = realStatus('R42B2'); return { ...st, entry: strip(st.entry) }; };
+    let d; try { d = w.gw.directTool(w.issue('R42A2'), sec(WED, 2)); } catch (e) { return 'THROW: ' + e.message; }
+    out.push({ direct: true, ok: d.decision === 'REJECT' && !d.executed && !d.already_posted && !d.request_id_conflict && d.ledger_status_unknown === true && w.ledger.entries.length === 1,
+      d: d.decision + '/' + d.already_posted + '/' + d.request_id_conflict + '/' + d.ledger_status_unknown });
+  }
+  return out.every(x => x.ok) || JSON.stringify(out.filter(x => !x.ok));
+});
+
+check('R43', 'v0.6.5 revisión previa r2 (ChatGPT): solicitud sin identificador válido (ausente, null, vacío, número) y el libro responde "ejecutado" con el mismo identificador o sin él → REJECT INPUT_INVALID sin "ya pagado", sin conflicto y sin estado desconocido', () => {
+  const out = [];
+  for (const [label, set] of [['ausente', r => { delete r.request_id; }], ['null', r => { r.request_id = null; }], ['vacío', r => { r.request_id = ''; }], ['42', r => { r.request_id = 42; }]]) {
+    for (const withId of [true, false]) {
+      const w = world('protected'), r = w.issue('R43'); set(r);
+      const entry = { seq: 1, amount: r.action.amount, currency: r.action.currency, destination: r.action.destination };
+      if (withId) entry.request_id = r.request_id;
+      w.ledger.status = () => ({ executed: true, entry });
+      let o; try { o = w.gw.directTool(r, WED); } catch (e) { return label + ' THROW: ' + e.message; }
+      out.push({ label, withId, ok: o.decision === 'REJECT' && o.reasons.includes('INPUT_INVALID') && !o.executed && !o.already_posted && !o.request_id_conflict
+        && !o.ledger_status_unknown && w.ledger.entries.length === 0, o: o.decision + '/' + o.already_posted + '/' + o.request_id_conflict + '/' + o.ledger_status_unknown });
+    }
+  }
+  return out.every(x => x.ok) || JSON.stringify(out.filter(x => !x.ok));
+});
+
 function runChecks() {
   return CHECKS.map(c => {
     let r;

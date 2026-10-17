@@ -21,7 +21,7 @@ console.log('\nMETA-PRUEBA (detector roto): controles rotos a propósito');
 for (const m of mutants) console.log(`${m.caught ? 'DETECTADO' : 'CIEGO    '} ${m.id.padEnd(4)} ${m.what}  <- ${m.caught_by.join(', ')}`);
 console.log(`\n${mutants.filter(m => m.caught).length}/${mutants.length} mutantes detectados`);
 const fs = require('fs'), path = require('path');
-const out = JSON.stringify({ version: 'samaia-transfer-demo/0.6.4', scenarios: rows, mutants }, null, 2) + '\n';
+const out = JSON.stringify({ version: 'samaia-transfer-demo/0.6.5', scenarios: rows, mutants }, null, 2) + '\n';
 fs.mkdirSync(path.join(__dirname, 'out'), { recursive: true });
 fs.writeFileSync(path.join(__dirname, 'out', 'resultados_v06.json'), out);
 const frozen = path.join(__dirname, 'resultados_v06.json');

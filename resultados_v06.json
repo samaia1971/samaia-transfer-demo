@@ -1,5 +1,5 @@
 {
-  "version": "samaia-transfer-demo/0.6.4",
+  "version": "samaia-transfer-demo/0.6.5",
   "scenarios": [
     {
       "id": "A1_normal",
@@ -294,7 +294,8 @@
         "R23",
         "R24",
         "R30",
-        "R31"
+        "R31",
+        "R42"
       ]
     },
     {
@@ -314,7 +315,8 @@
       "caught_by": [
         "P6",
         "R27",
-        "R38"
+        "R38",
+        "R42"
       ]
     },
     {
@@ -379,7 +381,8 @@
         "R26",
         "R29",
         "R33",
-        "R36"
+        "R36",
+        "R41"
       ]
     },
     {
@@ -435,7 +438,8 @@
         "R1a",
         "R18",
         "R29",
-        "R36"
+        "R36",
+        "R41"
       ]
     },
     {
@@ -581,7 +585,8 @@
         "R28",
         "R30",
         "R31",
-        "R36"
+        "R36",
+        "R41"
       ]
     },
     {
@@ -633,7 +638,8 @@
         "R31",
         "R36",
         "R38",
-        "R39"
+        "R39",
+        "R41"
       ]
     },
     {
@@ -758,7 +764,8 @@
         "R31",
         "R36",
         "R38",
-        "R39"
+        "R39",
+        "R41"
       ]
     },
     {
@@ -834,7 +841,8 @@
       "caught_by": [
         "R36",
         "R38",
-        "R39"
+        "R39",
+        "R41"
       ]
     },
     {
@@ -852,7 +860,8 @@
       "what": "el nuevo intento pierde que el resultado anterior sigue desconocido",
       "caught": true,
       "caught_by": [
-        "R38"
+        "R38",
+        "R42"
       ]
     },
     {
@@ -871,6 +880,33 @@
       "caught": true,
       "caught_by": [
         "R40"
+      ]
+    },
+    {
+      "id": "M59",
+      "file": "gateway.js",
+      "what": "un asiento sin monto, moneda o destino válidos se compara como otra operación (falso REQUEST_ID_CONFLICT)",
+      "caught": true,
+      "caught_by": [
+        "R41"
+      ]
+    },
+    {
+      "id": "M60",
+      "file": "gateway.js",
+      "what": "el gateway acepta como evidencia el asiento de otra solicitud (no compara el request_id)",
+      "caught": true,
+      "caught_by": [
+        "R42"
+      ]
+    },
+    {
+      "id": "M61",
+      "file": "gateway.js",
+      "what": "el gateway concilia con el libro una solicitud sin identificador válido (undefined === undefined)",
+      "caught": true,
+      "caught_by": [
+        "R43"
       ]
     }
   ]
