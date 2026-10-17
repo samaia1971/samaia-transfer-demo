@@ -615,6 +615,11 @@ check('R37', 'revisión previa r4 #3: un campo anidado miles de niveles (tipo, m
     const r = JSON.parse(JSON.stringify(w.issue('R37-' + k))); r.action[k] = JSON.parse(JSON.stringify(nested));
     try { res.push(w.gw.directTool(r, WED)); } catch (e) { return k + ' THROW: ' + e.message; }
   }
+  // La comprobación no depende del tamaño de pila de cada versión de Node: con 100 niveles (muy por debajo de cualquier límite de pila)
+  // la entrada debe rechazarse POR su profundidad, no por otro motivo. Y con 3000 niveles, sin excepción.
+  let n100 = {}; for (let i = 0; i < 100; i++) n100 = { n100 };
+  const d100 = decide({ request_id: 'R37-100', action: n100 }, WED);
+  if (!(d100.decision === 'REJECT' && JSON.stringify(d100.reasons).includes('nested deeper than 32 levels'))) return 'a 100 niveles no se rechazó por profundidad: ' + JSON.stringify(d100.reasons);
   let direct; try { direct = decide({ request_id: 'R37-direct', action: nested }, WED); } catch (e) { return 'decide THROW: ' + e.message; }
   return (res.every(o => o.decision === 'REJECT' && o.reasons.includes('INPUT_INVALID') && !o.executed) && direct.decision === 'REJECT' && w.ledger.entries.length === 0)
     || JSON.stringify(res.map(o => o.decision + '/' + o.reasons.join(',')));
