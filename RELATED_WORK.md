@@ -14,6 +14,8 @@ Deciding, before execution, whether an AI agent's action may proceed is neither 
 
 The test method of this demo comes from public LinkedIn posts by **Akhilesh Warik (DecisionAssure / ControlProof)**, 12–13 Oct 2026: compare a deliberately vulnerable implementation with an alternate execution path and a protected one under the same adversarial scenario (revoke authorization, attempt the operation through both paths, inspect the target's state, and report what the evidence supports and what it cannot verify); and check that the tests catch a known broken control. The vulnerable and protected gateways (`gateway.js`), the alternate paths, the ledger as target (`ledger.js`), the independent verifier (`verify.js`) and the mutation meta-test (`mutants.js`) follow that method. The implementation is this demo's own; he has not reviewed it.
 
+Scenario A6 (approved Monday, vendor placed on hold Tuesday, payment due Wednesday) comes from a public LinkedIn post by **Richard Colimon (ManChine AI Technology, RiCo)**, 13 Oct 2026. The demo makes that scenario executable in simulation; the implementation is this demo's own and he has not reviewed it.
+
 Large platforms: AWS Bedrock AgentCore Policy; Microsoft Agent Governance Toolkit and Entra runtime authorization; Google AP2 signed mandates; Visa and Mastercard agentic tokens; IETF draft-jiang-intent-security and Transaction Tokens for Agents; authorization and monitoring vendors (Cerbos, Permit.io, Oso, Zenity, Astrix and others).
 
 Sources: arxiv.org/abs/2609.11596 · arxiv.org/abs/2601.17744 · arxiv.org/abs/2603.20953 · arxiv.org/abs/2603.16586 · docs.aws.amazon.com/bedrock-agentcore · ietf.org/archive/id/draft-jiang-intent-security-03.html
